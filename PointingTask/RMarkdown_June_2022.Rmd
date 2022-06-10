@@ -1,0 +1,28 @@
+---
+title: "Data Analysis June"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+## Poiting Task analysis 
+
+
+```{r}
+library(readr)
+library(dplyr)
+
+CompletePointing <- read.csv("/Users/tracysanchezpacheco/Documents/Resources/humanA_Behavioural.csv", sep =",")
+CompletePointing %>% group_by(AvatarPresenceCategory) %>%
+  summarize(n())
+```
+
