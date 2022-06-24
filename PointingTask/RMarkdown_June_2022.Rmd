@@ -11,7 +11,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Poiting Task analysis 
@@ -23,6 +23,19 @@ library(dplyr)
 
 CompletePointing <- read.csv("/Users/tracysanchezpacheco/Documents/Resources/humanA_Behavioural.csv", sep =",")
 CompletePointing %>% group_by(AvatarPresenceCategory) %>%
-  summarize(n())
+```
+
+```{r}
+
+```
+
+
+```{r}
+
+
+bootResults<-boot(statistic = bootReg, formula = sales ~ adverts + airplay + attract, data = album2, R = 2000)
+
+boot.ci(bootResults, type = "bca", index = 1)
+
 ```
 
