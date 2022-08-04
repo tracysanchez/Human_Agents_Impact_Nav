@@ -28,6 +28,7 @@ library(ggplot2)
 ```{r echo = FALSE,warning = FALSE }
 
 HumanA <- read.csv("/Users/tracysanchezpacheco/Documents/Resources/humanA_Behavioural.csv", sep =",")
+head(HumanA)
 ```
 
 # Recoding for effects and formating factors 
@@ -37,7 +38,7 @@ HumanA$ContextEffectf <-dplyr::recode(HumanA$Context,
                                       False = -0.5, True= 0.5,
                                       .default = NaN)
 HumanA$AvatarPresenceEffectf <-dplyr::recode(HumanA$AvatarPresenceCategory,
-                                             NoAvatar = -0.5, Avatar= 0.5,
+                                             Present = -0.5, Omitted= 0.5,
                                              .default = NaN)
 HumanA$ContextEffectf <-factor(HumanA$ContextEffectf,levels= c(-0.5, 0.5), 
                                labels=c('Residential', 'Meaningful')) 
@@ -50,14 +51,12 @@ HumanA$AvatarPresencef <-factor(HumanA$AvatarPresenceEffectf,
 MainVariables <- subset(HumanA, select = c(AbsolutError, RT))
 summary(MainVariables)
 ```
+```{r}
+summary(HumanA$AvatarPresenceEffectf)
 
-```{r }
-library(dplyr)
-HumanA %>% 
-  group_by(ContextEffectf, AvatarPresencef)%>%
-  summarise(Accuracy = mean(AbsolutError, na.rm = TRUE),
-            RT = mean(RT, na.rm = TRUE))
 ```
+
+
 ```{r}
 df = HumanA[complete.cases(HumanA),]
 ggplot(df, aes(x=ContextEffectf,  y=AbsolutError, fill=AvatarPresencef)) + 
@@ -73,6 +72,90 @@ ggplot(df, aes(x=ContextEffectf,  y=RT, fill=AvatarPresencef)) +
         outlier.fill="red",
         outlier.size=0.5)
 ```
+
+```{r }
+library(dplyr)
+TwoFactorTable <- HumanA %>% 
+  group_by(ContextEffectf, AvatarPresencef)%>%
+  summarise(AccuracyMean = mean(AbsolutError, na.rm = TRUE),
+            n=n(),
+            AccuracyStandardDev = sd(AbsolutError, na.rm = TRUE),
+            RTMean = mean(RT, na.rm = TRUE),
+            RTStandardDev = sd(RT, na.rm = TRUE))
+library(tidyr)
+TwoFactorTableUnite <- TwoFactorTable %>%
+  unite("TwoFactor", ContextEffectf:AvatarPresencef, sep= " ", remove = F)
+  
+TwoFactorTableUnite <-  TwoFactorTableUnite %>%
+  mutate( AccuracyStandardError=AccuracyStandardDev/sqrt(n)) %>%  
+  mutate( AccuracyStandardIC=AccuracyStandardDev * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate( RTStandardError=RTStandardDev/sqrt(n)) 
+
+```
+
+ 
+
+```{r echo=FALSE}
+ggplot(data=subset(TwoFactorTableUnite, !is.na(AvatarPresencef)),
+       aes(x     = ContextEffectf,
+           y     = AccuracyMean,
+           group = AvatarPresencef)) +
+
+    geom_point(aes(shape=AvatarPresencef, linetype =AvatarPresencef), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=AvatarPresencef,
+                      ymin= AccuracyMean-AccuracyStandardError, 
+                      ymax=AccuracyMean+AccuracyStandardError),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Absolute angular error in degrees") +
+    xlab("Location Meaningfulness") +
+    ggtitle ("Accuracy performance",
+
+             subtitle = "Meaningfulness * Presence") +
+
+                 labs(caption  = paste0( 
+                                   "Error bars indicate one Standard Error \n"),
+                            hjust=0.5) 
+# Response Time 
+
+ggplot(data=subset(TwoFactorTableUnite, !is.na(AvatarPresencef)),
+       aes(x     = ContextEffectf,
+           y     = RTMean,
+           group = AvatarPresencef)) +
+
+    geom_point(aes(shape=AvatarPresencef, linetype =AvatarPresencef), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=AvatarPresencef,
+                      ymin= RTMean-RTStandardError, 
+                      ymax=RTMean+RTStandardError),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Response Time in Seconds") +
+    xlab("Location Meaningfulness") +
+    ggtitle ("Response Time",
+
+             subtitle = "Meaningfulness * Presence") +
+
+                 labs(caption  = paste0( 
+                                   "Error bars indicate one Standard Error \n"),
+                            hjust=0.5) 
+```
+
 
 
 
@@ -99,8 +182,6 @@ IDrandomInterceptOnly <-lme(AbsolutError ~ 1, data = df,
 StartlocationsrandomIntercept <-update(IDrandomInterceptOnly, .~.,   
                               random=~1|ID/PointingTaskStartingLocations,
                               method= "ML")
-anova(interceptOnly, IDrandomInterceptOnly, StartlocationsrandomIntercept)
-summary(StartlocationsrandomIntercept)
 ```
 Including Id and starting position as random effects significantly improves the fit of the model 
 
@@ -138,9 +219,9 @@ ggplot(CLD,
            group = AvatarPresencef,
            colours = .group)) +
 
-    geom_point(aes(shape=AvatarPresencef, color=AvatarPresencef), position=position_dodge(0.3)) +
+    geom_point(aes(shape=AvatarPresencef, linetype =AvatarPresencef), position=position_dodge(0.3)) +
 
-    geom_errorbar(aes(color=AvatarPresencef,
+    geom_errorbar(aes(linetype=AvatarPresencef,
                       ymin  =  lower.CL,
                       ymax  =  upper.CL),
                       position=position_dodge(0.3),
