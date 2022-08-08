@@ -1,0 +1,381 @@
+---
+title: "General mixed linear models"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    toc_depth: 6
+    mathjax: null
+    css: doc.css # To set style to maximum in a separate file
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment = NA) # To delete all hashtags from output in HTML 
+library(readr);library(dlookr);library(dplyr);
+library(lme4);library(car);library(emmeans);library(MASS);library(jtools);
+library(lmerTest);library(gmodels);library(nlme); library(multcompView);
+library(ggplot2)
+#emm_options(lmerTest.limit = 10000)
+#emm_options(pbkrtest.limit = 10000)
+```
+
+# Loading Data 
+
+```{r echo = FALSE,warning = FALSE }
+
+HumanA <- read.csv("/Users/tracysanchezpacheco/Documents/Resources/humanA_Behavioural.csv", sep =",")
+head(HumanA)
+```
+
+# Recoding for effects and formating factors 
+```{r }
+
+HumanA$ContextEffectf <-dplyr::recode(HumanA$Context, 
+                                      False = -0.5, True= 0.5,
+                                      .default = NaN)
+HumanA$AvatarPresenceEffectf <-dplyr::recode(HumanA$AvatarPresenceCategory,
+                                             Omitted = -0.5, Present= 0.5,
+                                             .default = NaN)
+HumanA$ContextEffectf <-factor(HumanA$ContextEffectf,levels= c(-0.5, 0.5), 
+                               labels=c('Residential', 'Meaningful')) 
+HumanA$AvatarPresencef <-factor(HumanA$AvatarPresenceEffectf,
+                                levels= c(-0.5, 0.5), 
+                                labels=c('Not displayed', 'displayed')) 
+```
+# Data descriptives
+```{r}
+MainVariables <- subset(HumanA, select = c(AbsolutError, RT))
+summary(MainVariables)
+```
+```{r}
+summary(HumanA$AvatarPresenceEffectf)
+
+```
+
+
+```{r}
+df = HumanA[complete.cases(HumanA),]
+ggplot(df, aes(x=ContextEffectf,  y=AbsolutError, fill=AvatarPresencef)) + 
+  geom_boxplot(notch=TRUE,
+        notchwidth = 0.8,
+        outlier.colour="red",
+        outlier.fill="red",
+        outlier.size=0.5)
+ggplot(df, aes(x=ContextEffectf,  y=RT, fill=AvatarPresencef)) + 
+  geom_boxplot(notch=TRUE,
+        notchwidth = 0.8,
+        outlier.colour="red",
+        outlier.fill="red",
+        outlier.size=0.5)
+```
+
+```{r }
+library(dplyr)
+TwoFactorTable <- HumanA %>% 
+  group_by(ContextEffectf, AvatarPresencef)%>%
+  summarise(AccuracyMean = mean(AbsolutError, na.rm = TRUE),
+            n=n(),
+            AccuracyStandardDev = sd(AbsolutError, na.rm = TRUE),
+            RTMean = mean(RT, na.rm = TRUE),
+            RTStandardDev = sd(RT, na.rm = TRUE))
+library(tidyr)
+TwoFactorTableUnite <- TwoFactorTable %>%
+  unite("TwoFactor", ContextEffectf:AvatarPresencef, sep= " ", remove = F)
+  
+TwoFactorTableUnite <-  TwoFactorTableUnite %>%
+  mutate( AccuracyStandardError=AccuracyStandardDev/sqrt(n)) %>%  
+  mutate( AccuracyStandardIC=AccuracyStandardDev * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate( RTStandardError=RTStandardDev/sqrt(n)) 
+
+```
+
+ 
+
+```{r echo=FALSE}
+ggplot(data=subset(TwoFactorTableUnite, !is.na(AvatarPresencef)),
+       aes(x     = ContextEffectf,
+           y     = AccuracyMean,
+           group = AvatarPresencef)) +
+
+    geom_point(aes(shape=AvatarPresencef, linetype =AvatarPresencef), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=AvatarPresencef,
+                      ymin= AccuracyMean-AccuracyStandardError, 
+                      ymax=AccuracyMean+AccuracyStandardError),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Absolute angular error in degrees") +
+    xlab("Location Meaningfulness") +
+    ggtitle ("Accuracy performance",
+
+             subtitle = "Meaningfulness * Presence") +
+
+                 labs(caption  = paste0( 
+                                   "Error bars indicate one Standard Error \n"),
+                            hjust=0.5) 
+# Response Time 
+
+ggplot(data=subset(TwoFactorTableUnite, !is.na(AvatarPresencef)),
+       aes(x     = ContextEffectf,
+           y     = RTMean,
+           group = AvatarPresencef)) +
+
+    geom_point(aes(shape=AvatarPresencef, linetype =AvatarPresencef), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=AvatarPresencef,
+                      ymin= RTMean-RTStandardError, 
+                      ymax=RTMean+RTStandardError),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Response Time in Seconds") +
+    xlab("Location Meaningfulness") +
+    ggtitle ("Response Time",
+
+             subtitle = "Meaningfulness * Presence") +
+
+                 labs(caption  = paste0( 
+                                   "Error bars indicate one Standard Error \n"),
+                            hjust=0.5) 
+```
+
+
+
+
+
+## Checking for the distribution of Absolut error
+```{r warning = FALSE }
+df = HumanA[complete.cases(HumanA),]
+df$AbsolutErrorR <- round(df$AbsolutError, digits = 3)
+qqp(df$AbsolutErrorR, "norm")
+qqp(df$AbsolutErrorR, "lnorm")
+```
+
+
+# Linear mixed models
+
+## Assessing the need for a multilevel model
+
+```{r}
+interceptOnly <-gls(AbsolutError ~ 1, data = df, 
+                    method = "ML")
+IDrandomInterceptOnly <-lme(AbsolutError ~ 1, data = df,  
+                            random =~1|ID,
+                            method = "ML")
+StartlocationsrandomIntercept <-update(IDrandomInterceptOnly, .~.,   
+                              random=~1|ID/PointingTaskStartingLocations,
+                              method= "ML")
+```
+Including Id and starting position as random effects significantly improves the fit of the model 
+
+## Absolut Error Models
+
+I am adding one main factor at a time 
+```{r}
+MeaningfulContext <-update(StartlocationsrandomIntercept, .~. + ContextEffectf)
+summary(MeaningfulContext)
+Anova(MeaningfulContext)
+```
+```{r}
+Presence <-update(MeaningfulContext, .~. + AvatarPresencef)
+summary(Presence)
+Anova(Presence)
+```
+
+```{r}
+TwofactorInteraction <-update(Presence, .~. + ContextEffectf*AvatarPresencef)
+summary(TwofactorInteraction)
+Anova(TwofactorInteraction)
+Pairwise<- emmeans(TwofactorInteraction, pairwise ~ ContextEffectf*AvatarPresencef)
+Pairwise
+plot(Pairwise[[2]], CIs = TRUE)
+```
+```{r}
+library(multcomp);library(multcompView)
+CLD <- cld(Pairwise,
+          alpha=0.05,
+          Letters=letters,
+          adjust="sidak")
+ggplot(CLD,
+       aes(x     = ContextEffectf,
+           y     = emmean,
+           group = AvatarPresencef,
+           colours = .group)) +
+
+    geom_point(aes(shape=AvatarPresencef, linetype =AvatarPresencef), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=AvatarPresencef,
+                      ymin  =  lower.CL,
+                      ymax  =  upper.CL),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Estimated marginal mean\ Absolute angular error") +
+    xlab("Location Meaningfulness") +
+    ggtitle ("Marginal Means",
+
+             subtitle = "Meaningfulness * Presence") +
+
+                 labs(caption  = paste0( 
+                                   "Boxes indicate the EM mean. \n",
+                                   "Error bars indicate the 95% ",
+                                   "confidence interval of the EM mean. \n"),
+                            hjust=0.5) 
+```
+
+```{r}
+anova(interceptOnly, IDrandomInterceptOnly, StartlocationsrandomIntercept, 
+      MeaningfulContext, Presence, TwofactorInteraction )
+```
+
+```{r}
+plot(TwofactorInteraction, which = 1)
+plot(MeaningfulContext, which = 1)
+```
+```{r}
+GHQ <- glmer(AbsolutError ~  ContextEffectf*AvatarPresencef + (1|ID), data = HumanA,family=gaussian(link = "log"), nAGQ = 25)  
+summary(GHQ)
+Anova(GHQ)
+anova(GHQ)
+emmeans(GHQ, pairwise ~ ContextEffectf:AvatarPresencef, type = "response")
+```
+```{r}
+plot(fitted(GHQ), residuals(GHQ), xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, lty = 2)
+lines(smooth.spline(fitted(GHQ), residuals(GHQ)))
+```
+```{r}
+interceptOnly <-gls(log(AbsolutError) ~ 1, data = df, 
+                    method = "ML")
+IDrandomInterceptOnly <-lme(log(AbsolutError) ~ 1, data = df,  
+                            random =~1|ID,
+                            method = "ML")
+StartlocationsrandomIntercept <-update(IDrandomInterceptOnly, .~.,   
+                              random=~1|ID/PointingTaskStartingLocations,
+                              method= "ML")
+MeaningfulContext <-update(StartlocationsrandomIntercept, .~. + ContextEffectf)
+Presence <-update(MeaningfulContext, .~. + AvatarPresencef)
+TwofactorInteraction <-update(Presence, .~. + ContextEffectf*AvatarPresencef)
+summary(TwofactorInteraction)
+Anova(TwofactorInteraction)
+Pairwise<- emmeans(TwofactorInteraction, pairwise ~ ContextEffectf*AvatarPresencef, type='response')
+Pairwise 
+plot(Pairwise[[2]])
+anova(interceptOnly, IDrandomInterceptOnly, StartlocationsrandomIntercept, 
+      MeaningfulContext, Presence, TwofactorInteraction )
+plot(TwofactorInteraction, which = 1)
+```
+```{r}
+model <- glmmPQL(RT ~  ContextEffectf*AvatarPresencef, ~1|ID/PointingTaskStartingLocations,  family = gaussian(link = "log"), data = HumanA, verbose = FALSE)
+summary(model)
+```
+
+
+
+
+## Response Time models 
+## Checking for the distribution of RT
+```{r warning = FALSE }
+df = HumanA[complete.cases(HumanA),]
+df$RTr <- round(df$RT, digits = 3)
+qqp(df$RT, "norm")
+qqp(df$RT, "lnorm")
+```
+
+```{r}
+interceptOnlyt <-gls(log(RT) ~ 1, data = df, 
+                    method = "ML")
+IDrandomInterceptOnlyt <-lme(log(RT) ~ 1, data = df,  
+                            random =~1|ID,
+                            method = "ML")
+StartlocationsrandomInterceptt <-lme(log(RT) ~ 1, data = df,   
+                              random=~1|ID|PointingTaskStartingLocations,
+                              method= "ML")
+MeaningfulContext <-update(StartlocationsrandomInterceptt, .~. + ContextEffectf)
+Presence <-update(MeaningfulContext, .~. + AvatarPresencef)
+TwofactorInteraction <-update(Presence, .~. + ContextEffectf*AvatarPresencef)
+summary(TwofactorInteraction)
+Anova(TwofactorInteraction)
+Pairwiset<- emmeans(TwofactorInteraction, pairwise ~ ContextEffectf*AvatarPresencef, type='response')
+Pairwiset 
+ref_grid(TwofactorInteraction)
+plot(Pairwiset[[2]])
+anova(interceptOnlyt, IDrandomInterceptOnlyt, StartlocationsrandomInterceptt, 
+      MeaningfulContext, Presence, TwofactorInteraction )
+plot(TwofactorInteraction, which = 1)
+```
+```{r}
+
+CLD <- cld(Pairwiset,
+          alpha=0.05,
+          Letters=letters,
+          adjust="sidak")
+ggplot(CLD,
+       aes(x     = ContextEffectf,
+           y     = response,
+           group = AvatarPresencef,
+           colours = .group)) +
+
+    geom_point(aes(shape=AvatarPresencef, color=AvatarPresencef), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(color=AvatarPresencef,
+                      ymin  =  lower.CL,
+                      ymax  =  upper.CL),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Estimated marginal mean\ Response Time in Seconds") +
+    xlab("Location Meaningfulness") +
+    ggtitle ("Marginal Means",
+
+             subtitle = "Meaningfulness * Presence") +
+
+                 labs(caption  = paste0( 
+                                   "Boxes indicate the EM mean. \n",
+                                   "Error bars indicate the 95% ",
+                                   "confidence interval of the EM mean. \n"),
+                            hjust=0.5) 
+```
+
+
+```{r}
+GHQ <- glmer(RT ~  ContextEffectf*AvatarPresencef + (1|ID), data = HumanA,
+    family=gaussian(link = "log"), nAGQ = 25)  
+summary(GHQ)
+Anova(GHQ)
+anova(GHQ)
+emmeans(GHQ, pairwise ~ ContextEffectf:AvatarPresencef )
+```
+
+
+
+
