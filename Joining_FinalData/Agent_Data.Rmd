@@ -42,7 +42,38 @@ unique(HumanA_Agent$SubjectID)
 ```
 
 ```{r}
-#HumanA_Agent <- HumanA_Agent %>% dplyr::filter(!SubjectID %in% c(4580, 3540))
+Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM.csv", sep =",")
+# Ensure Entropy is a data frame or tibble
+Entropy <- as.data.frame(Entropy)
+
+# Drop columns X and Experiment using base R
+Entropy <- Entropy[, !(names(Entropy) %in% c("X", "Experiment"))]
+
+# View the updated dataset
+head(Entropy)
+```
+```{r}
+
+# Rename columns in the Entropy dataset
+Entropy <- Entropy %>%
+  rename(
+    avatar_ID=  Agent_ID,
+    
+    SubjectID= Participant_ID
+  )
+
+# Perform concatenation based on avatar_ID and SubjectID
+Merged_Data <- HumanA_Agent %>%
+  inner_join(Entropy, by = c("avatar_ID", "SubjectID"))
+
+# View the merged dataset
+head(Merged_Data)
+```
+
+
+
+```{r}
+HumanA_Agent <- Merged_Data %>% dplyr::filter(!SubjectID %in% c(4580, 3540))
 HumanA_Agent$ContextEffectf <-dplyr::recode(HumanA_Agent$Context, 
                                       False = -0.5, True= 0.5,
                                       .default = NaN)
@@ -62,6 +93,28 @@ HumanA_Agent$Agent_Action_levelf <-factor(HumanA_Agent$Agent_Action_level,
                                 labels=c('Passive', 'Active'))
 
 ```
+
+```{r}
+
+# Average values for each unique combination of SubjectID and avatar_ID
+Entropy_Data <- HumanA_Fixations %>%
+  group_by(SubjectID, avatar_ID) %>%
+  summarize(
+    across(where(is.numeric), mean, na.rm = TRUE),  # Average numeric columns
+    across(where(is.character), ~ first(.)),       # Keep the first value for character columns
+    across(where(is.factor), ~ first(.)),          # Keep the first value for factor columns
+    .groups = "drop"
+  )
+
+
+# View the filtered data
+head(Entropy_Data)
+
+```
+
+
+
+
 
 ```{r}
 df <- HumanA_Agent %>% 
@@ -174,7 +227,7 @@ cat("Including Id and starting position as random effects significantly improves
 ```{r}
 # Just behavioral
 # No Eye-tracking
-No_Eye_tracking <- update(TrialIDrandomIntercept_Agent, .~. + ContextEffectf*Agent_Action_levelf )
+No_Eye_tracking <- update(TrialIDrandomIntercept_Agent, .~. + ContextEffectf*Agent_Action_levelf + max )
 # Model summary
 summary(No_Eye_tracking)
 # Anova test for the model
@@ -216,7 +269,7 @@ print(pairs_interaction)
 ```{r}
 # Complete model with all predictors
 Complete_model <- update(TrialIDrandomIntercept_Agent, 
-                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze +   ContextEffectf*Agent_Action_levelf)
+                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze +   ContextEffectf*Agent_Action_levelf + mean)
 # Model summary
 summary(Complete_model)
 ```

@@ -35,13 +35,41 @@ head(HumanA_Fixations)
 ```{r}
 unique(HumanA_Fixations$SubjectID)
 ```
+```{r}
+Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM.csv", sep =",")
+# Ensure Entropy is a data frame or tibble
+Entropy <- as.data.frame(Entropy)
+
+# Drop columns X and Experiment using base R
+Entropy <- Entropy[, !(names(Entropy) %in% c("X", "Experiment"))]
+
+# View the updated dataset
+head(Entropy)
+```
+```{r}
+
+# Rename columns in the Entropy dataset
+Entropy <- Entropy %>%
+  rename(
+    avatar_ID=  Agent_ID,
+    
+    SubjectID= Participant_ID
+  )
+
+# Perform concatenation based on avatar_ID and SubjectID
+Merged_Data <- HumanA_Fixations %>%
+  inner_join(Entropy, by = c("avatar_ID", "SubjectID"))
+
+# View the merged dataset
+head(Merged_Data)
+```
 
 
 
 ```{r}
 library(dplyr)
 
-HumanA_Fixations <- HumanA_Fixations %>%
+HumanA_Fixations <- Merged_Data %>%
   # Recoding variables
   mutate(
     ContextEffect = case_when(
@@ -74,6 +102,24 @@ HumanA_Fixations <- HumanA_Fixations %>%
     Matchf = factor(Match, levels = c(-0.5, 0.5, 0), labels = c('Not Congruent', 'Congruent', 'Neutral')),
     Experimentf = factor(Experiment, levels = c(-0.5, 0.5), labels = c('Experiment 1', 'Experiment 2'))
   )
+
+```
+
+```{r}
+
+# Average values for each unique combination of SubjectID and avatar_ID
+Entropy_Data <- HumanA_Fixations %>%
+  group_by(SubjectID, avatar_ID) %>%
+  summarize(
+    across(where(is.numeric), mean, na.rm = TRUE),  # Average numeric columns
+    across(where(is.character), ~ first(.)),       # Keep the first value for character columns
+    across(where(is.factor), ~ first(.)),          # Keep the first value for factor columns
+    .groups = "drop"
+  )
+
+
+# View the filtered data
+head(Entropy_Data)
 
 ```
 
@@ -237,6 +283,12 @@ cat("Number of unique IDs in df:", length(unique_ids_df), "\n")
 unique_ids_df
 ```
 ```{r}
+grouped_data <- filtered_data %>%
+    group_by(Experimentf) %>%
+    summarize(unique_subject_count = n_distinct(SubjectID))
+```
+
+```{r}
 length(unique(filtered_data$SubjectID))
 # Mean and standard deviation across ContextEffect
 context_stats <- filtered_data %>%
@@ -325,7 +377,7 @@ Anova(TwofactorInteraction_No_Eye)
 ```{r}
 # Starting with eye-tracking as predictor of performance
 
-TwofactorInteraction_Agent <-update(StartlocationsrandomIntercept, .~. +  Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze)
+TwofactorInteraction_Agent <-update(StartlocationsrandomIntercept, .~. +  Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze + mean)
 # Model summary
 summary(TwofactorInteraction_Agent)
 # Anova test for the model
@@ -354,7 +406,8 @@ linear_model <- lm(AbsolutError ~ Dwelling_Time_Building_Gaze + Dwelling_Time_Ag
 
 # Complete model with all predictors
 Complete_model <- update(StartlocationsrandomIntercept, 
-                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze + ContextEffectf*Agent_Action_levelf + Matchf)
+                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze +  ContextEffectf*Agent_Action_levelf + Matchf + mean
+                        )
 
 
 # Model without the 'Matchf' variable
@@ -395,12 +448,145 @@ model <- lmer(AbsolutError ~ (1 | SubjectID) + (1 | PointingTaskStartingLocation
                 Agent_Action_levelf:Matchf + ContextEffectf:Agent_Action_levelf:Matchf, 
               data = df)
 ```
+
+
+```{r}
+# Prepare the data: filter complete cases and round the AbsolutError variable
+df <- Entropy_Data %>% 
+  filter(complete.cases(.)) %>%
+  mutate(AbsolutErrorR = round(AbsolutError, digits = 3))
+
+# Compare AbsolutErrorR to a normal distribution
+qqp(df$AbsolutErrorR, "norm")
+
+# Compare AbsolutErrorR to a log-normal distribution
+qqp(df$AbsolutErrorR, "lnorm")
+```
+
+
+
+```{r}
+target_ids <- c("5238",  "365", "1754", "2258", "2693", "3310", "4176", "4597", "4796", "4917", "5238", 
+  "5741", "6642", "7093", "7412", "7842", "8007", "8469", "8673",  "9472", 
+  "9502", "9586", "9601", "1031", "1268", "1574", "1843", "4580", "4598", "4847", 
+  "4875", "5161", "5189", "5743", "5766", "5851", "5972", "6406", "7081", "7823", 
+  "7935", "8629", "9297", "9627", "1005", "1008", "1010", "1011", "1013", "1017", 
+  "1018", "1019", "1021", "1022", "1023", "1054", "1055", "1056", "1057", "1058", 
+  "1068", "1069", "1072", "1073", "1074", "1075", "1077", "1079", "1080")
+
+filtered_data <- df[df$SubjectID %in% target_ids,]
+
+unique_ids_df <- unique(df$SubjectID)
+unique_ids_filtered_df <- unique(filtered_data$SubjectID)
+
+# Finding IDs in df but not in filtered_df
+diff_ids = setdiff(unique_ids_df, unique_ids_filtered_df)
+print(diff_ids)
+cat("Number of unique IDs in df not in filtered_df:", length(diff_ids), "\n")
+cat("Number of unique IDs in df:", length(unique_ids_df), "\n")
+unique_ids_df
+```
+
+
+```{r}
+length(unique(filtered_data$SubjectID))
+# Mean and standard deviation across ContextEffect
+context_stats <- filtered_data %>%
+  group_by(ContextEffect) %>%
+  summarise(
+    n = n(),
+    mean_Dwelling_Time_Agent_Gaze = mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Agent_Gaze = sd(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    mean_Dwelling_Time_Building_Gaze = mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Building_Gaze = sd(Dwelling_Time_Building_Gaze, na.rm = TRUE)
+  )
+
+print(context_stats)
+
+# Mean and standard deviation across Agent_Action_level
+action_level_stats <- filtered_data %>%
+  group_by(Agent_Action_level) %>%
+  summarise(
+    n = n(),
+    mean_Dwelling_Time_Agent_Gaze = mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Agent_Gaze = sd(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    mean_Dwelling_Time_Building_Gaze = mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Building_Gaze = sd(Dwelling_Time_Building_Gaze, na.rm = TRUE)
+  )
+
+print(action_level_stats)
+
+# Mean and standard deviation across Matchf
+matchf_stats <- filtered_data %>%
+  group_by(Matchf) %>%
+  summarise(
+    n = n(),
+    mean_Dwelling_Time_Agent_Gaze = mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Agent_Gaze = sd(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    mean_Dwelling_Time_Building_Gaze = mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Building_Gaze = sd(Dwelling_Time_Building_Gaze, na.rm = TRUE)
+  )
+
+print(matchf_stats)
+# Summarize the means and standard deviations for agent and building gazes
+agent_building_stats <- filtered_data %>%
+  group_by(Agent_Action_level) %>%
+  summarise(
+    n = n(),
+    mean_Dwelling_Time_Agent_Gaze = mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Agent_Gaze = sd(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+    mean_Dwelling_Time_Building_Gaze = mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    sd_Dwelling_Time_Building_Gaze = sd(Dwelling_Time_Building_Gaze, na.rm = TRUE)
+  )
+
+# Print the summary statistics
+print(agent_building_stats)
+
+```
+
+
+
+## --- Assessing the need for a multilevel model ---
+
+```{r}
+# Filter the data to include only rows where Agent_Action_levelf is "active"
+filtered_data_active <- filtered_data[filtered_data$Agent_Action_levelf == "Active", ]
+
+# Fit the mixed-effects model using lmer
+IDrandomInterceptOnly_Active <- lmer(mean ~ 1 + (1 | SubjectID), data = filtered_data_active)
+
+
+```
+## --- Absolute Error Models ---
+
+
+```{r}
+# Just behavioral
+TwofactorInteraction_Entropy <-update(IDrandomInterceptOnly_Active, .~. + ContextEffectf*Matchf)
+# Model summary
+summary(TwofactorInteraction_Entropy)
+# Anova test for the model
+Anova(TwofactorInteraction_Entropy)
+```
+
+
+```{r}
+plot_model(TwofactorInteraction_Entropy, type="re", order.terms = TRUE)
+
+plot_model(TwofactorInteraction_Entropy, show.values = TRUE, value.offset = .3, colors="bw",  vline.color = "red")
+
+
+library(data.table)
+model_df <- data.table(coef(summary(Complete_model)), keep.rownames = 'term')
+write.csv(model_df, "/Volumes/TwoTeras/Resources/Entropy_LMM.csv")
+```
+
 ```{r}
 # Calculate EMMeans for the significant effects and interactions
-emm_context <- emmeans(No_Eye_tracking, ~ ContextEffectf)
-emm_agent <- emmeans(No_Eye_tracking, ~ Agent_Action_levelf)
-emm_interaction <- emmeans(No_Eye_tracking, ~ ContextEffectf * Agent_Action_levelf)
-emm_congruency <- emmeans(No_Eye_tracking, ~ Matchf)
+emm_context <- emmeans(TwofactorInteraction_Entropy, ~ ContextEffectf)
+emm_agent <- emmeans(TwofactorInteraction_Entropy, ~ Agent_Action_levelf)
+emm_interaction <- emmeans(TwofactorInteraction_Entropy, ~ ContextEffectf * Agent_Action_levelf)
+emm_congruency <- emmeans(TwofactorInteraction_Entropy, ~ Matchf)
 
 # Print the EMMeans results
 print(emm_context)
