@@ -36,7 +36,7 @@ head(HumanA_Fixations)
 unique(HumanA_Fixations$SubjectID)
 ```
 ```{r}
-Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM.csv", sep =",")
+Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM_Chao_Shen_Normalized.csv", sep =",")
 # Ensure Entropy is a data frame or tibble
 Entropy <- as.data.frame(Entropy)
 
@@ -45,6 +45,7 @@ Entropy <- Entropy[, !(names(Entropy) %in% c("X", "Experiment"))]
 
 # View the updated dataset
 head(Entropy)
+unique(Entropy$Participant_ID)
 ```
 ```{r}
 
@@ -52,9 +53,11 @@ head(Entropy)
 Entropy <- Entropy %>%
   rename(
     avatar_ID=  Agent_ID,
-    
     SubjectID= Participant_ID
   )
+
+Entropy <- Entropy %>%
+  mutate(SubjectID = as.integer(SubjectID))
 
 # Perform concatenation based on avatar_ID and SubjectID
 Merged_Data <- HumanA_Fixations %>%
@@ -353,10 +356,10 @@ print(agent_building_stats)
 interceptOnly <- gls(AbsolutError ~ 1, data = df, method = "ML")
 
 # Add ID as random intercept
-IDrandomInterceptOnly <- lmer(AbsolutError ~ 1 + (1|SubjectID), data = filtered_data)
+IDrandomInterceptOnly <- lmer(AbsolutError ~ 1 + (1|SubjectID), data = df)
 
 # Add both ID and Starting Position as random intercepts
-StartlocationsrandomIntercept <- lmer(AbsolutError ~ 1 + (1|SubjectID) + (1|PointingTaskStartingLocations), data = filtered_data)
+StartlocationsrandomIntercept <- lmer(AbsolutError ~ 1 + (1|SubjectID) + (1|PointingTaskStartingLocations), data = df)
 anova( IDrandomInterceptOnly, StartlocationsrandomIntercept)
 cat("Including Id and starting position as random effects significantly improves the fit of the model\n")
 ```
@@ -407,6 +410,7 @@ linear_model <- lm(AbsolutError ~ Dwelling_Time_Building_Gaze + Dwelling_Time_Ag
 # Complete model with all predictors
 Complete_model <- update(StartlocationsrandomIntercept, 
                         . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze +  ContextEffectf*Agent_Action_levelf + Matchf + mean
+                        
                         )
 
 
