@@ -70,10 +70,8 @@ head(Merged_Data)
 
 
 ```{r}
-library(dplyr)
-
-HumanA_Fixations <- Merged_Data %>%
-  # Recoding variables
+HumanA_Fixations <- Merged_Data %>%   
+  # Recoding variables   
   mutate(
     ContextEffect = case_when(
       Context == "False" ~ -0.5,
@@ -90,21 +88,27 @@ HumanA_Fixations <- Merged_Data %>%
       Agent_Category == "Active" ~ 0.5,
       TRUE ~ NaN
     ),
-  Match = ifelse((Experiment == 1 & ContextEffect == 0.5), 0.5, -0.5),
+    Match = ifelse((Experiment == 1 & ContextEffect == 0.5), 0.5, -0.5),
     Experiment = case_when(
       Experiment == 1 ~ -0.5,
       Experiment == 2 ~ 0.5,
       TRUE ~ NaN
     )
-  ) %>%
-  # Convert numeric variables to factors
+  ) %>%   
+  # Convert numeric variables to factors   
   mutate(
     ContextEffectf = factor(ContextEffect, levels = c(-0.5, 0.5), labels = c('Residential', 'Public')),
     AgentPresencef = factor(AgentPresence, levels = c(-0.5, 0.5), labels = c('Omitted', 'Displayed')),
     Agent_Action_levelf = factor(Agent_Action_level, levels = c(-0.5, 0.5), labels = c('Passive', 'Active')),
     Matchf = factor(Match, levels = c(-0.5, 0.5, 0), labels = c('Not Congruent', 'Congruent', 'Neutral')),
     Experimentf = factor(Experiment, levels = c(-0.5, 0.5), labels = c('Experiment 1', 'Experiment 2'))
+  ) %>%
+  # Center dwelling time variables
+  mutate(
+    Dwelling_Time_Building_Gaze_Centered = Dwelling_Time_Building_Gaze - mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    Dwelling_Time_Agent_Gaze_Centered = Dwelling_Time_Agent_Gaze - mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE)
   )
+
 
 ```
 
@@ -286,6 +290,10 @@ cat("Number of unique IDs in df:", length(unique_ids_df), "\n")
 unique_ids_df
 ```
 ```{r}
+unique_ids_experiment1 <- unique(filtered_data$SubjectID[filtered_data$Experimentf == "Experiment 1"])
+```
+
+```{r}
 grouped_data <- filtered_data %>%
     group_by(Experimentf) %>%
     summarize(unique_subject_count = n_distinct(SubjectID))
@@ -380,7 +388,7 @@ Anova(TwofactorInteraction_No_Eye)
 ```{r}
 # Starting with eye-tracking as predictor of performance
 
-TwofactorInteraction_Agent <-update(StartlocationsrandomIntercept, .~. +  Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze + mean)
+TwofactorInteraction_Agent <-update(StartlocationsrandomIntercept, .~. +  Dwelling_Time_Building_Gaze_Centered+Dwelling_Time_Agent_Gaze_Centered + mean)
 # Model summary
 summary(TwofactorInteraction_Agent)
 # Anova test for the model
@@ -409,7 +417,7 @@ linear_model <- lm(AbsolutError ~ Dwelling_Time_Building_Gaze + Dwelling_Time_Ag
 
 # Complete model with all predictors
 Complete_model <- update(StartlocationsrandomIntercept, 
-                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze +  ContextEffectf*Agent_Action_levelf + Matchf + mean
+                        . ~ . + Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +  ContextEffectf*Agent_Action_levelf + Matchf + mean
                         
                         )
 

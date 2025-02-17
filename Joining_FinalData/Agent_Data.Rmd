@@ -42,7 +42,7 @@ unique(HumanA_Agent$SubjectID)
 ```
 
 ```{r}
-Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM.csv", sep =",")
+Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM_Chao_Shen_Normalized.csv", sep =",")
 # Ensure Entropy is a data frame or tibble
 Entropy <- as.data.frame(Entropy)
 
@@ -73,31 +73,40 @@ head(Merged_Data)
 
 
 ```{r}
-HumanA_Agent <- Merged_Data %>% dplyr::filter(!SubjectID %in% c(4580, 3540))
-HumanA_Agent$ContextEffectf <-dplyr::recode(HumanA_Agent$Context, 
-                                      False = -0.5, True= 0.5,
-                                      .default = NaN)
-HumanA_Agent$AgentPresence <-dplyr::recode(HumanA_Agent$AvatarPresenceCategory,
-                                             Omitted = -0.5, Present= 0.5,
-                                             .default = NaN)
-HumanA_Agent$Agent_Action_level <-dplyr::recode(HumanA_Agent$AgentCategory,
-                                             Passive = -0.5, Active= 0.5,
-                                             .default = NaN)
-HumanA_Agent$ContextEffectf <-factor(HumanA_Agent$ContextEffectf,levels= c(-0.5, 0.5), 
-                               labels=c('Residential', 'Public')) 
-HumanA_Agent$AgentPresencef <-factor(HumanA_Agent$AgentPresence,
-                                levels= c(-0.5, 0.5), 
-                                labels=c('Omitted', 'Displayed'))
-HumanA_Agent$Agent_Action_levelf <-factor(HumanA_Agent$Agent_Action_level,
-                                levels= c(-0.5, 0.5), 
-                                labels=c('Passive', 'Active'))
+HumanA_Agent <- Merged_Data %>% 
+  dplyr::filter(!SubjectID %in% c(4580, 3540)) %>%
+  mutate(
+    ContextEffect = dplyr::recode(Context, 
+                                  False = -0.5, True = 0.5, 
+                                  .default = NaN),
+    AgentPresence = dplyr::recode(AvatarPresenceCategory, 
+                                  Omitted = -0.5, Present = 0.5, 
+                                  .default = NaN),
+    Agent_Action_level = dplyr::recode(AgentCategory, 
+                                       Passive = -0.5, Active = 0.5, 
+                                       .default = NaN)
+  ) %>%
+  mutate(
+    ContextEffectf = factor(ContextEffect, levels = c(-0.5, 0.5), 
+                            labels = c('Residential', 'Public')),
+    AgentPresencef = factor(AgentPresence, levels = c(-0.5, 0.5), 
+                            labels = c('Omitted', 'Displayed')),
+    Agent_Action_levelf = factor(Agent_Action_level, levels = c(-0.5, 0.5), 
+                                 labels = c('Passive', 'Active'))
+  ) %>%
+  # Centering dwelling time variables
+  mutate(
+    Dwelling_Time_Building_Gaze_Centered = Dwelling_Time_Building_Gaze - mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    Dwelling_Time_Agent_Gaze_Centered = Dwelling_Time_Agent_Gaze - mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE)
+  )
+
 
 ```
 
 ```{r}
 
 # Average values for each unique combination of SubjectID and avatar_ID
-Entropy_Data <- HumanA_Fixations %>%
+Entropy_Data <- HumanA_Agent %>%
   group_by(SubjectID, avatar_ID) %>%
   summarize(
     across(where(is.numeric), mean, na.rm = TRUE),  # Average numeric columns
@@ -215,12 +224,12 @@ unique_ids_df
 
 ```{r}
 # Model with only intercept
-interceptOnly_Agent<-gls(AbsolutErrorR ~ 1, data = filtered_data, 
+interceptOnly_Agent<-gls(AbsolutErrorR ~ 1, data = df_Agent, 
                     method = "ML")
 # Add ID as random intercept
-IDrandomInterceptOnly_Agent <-lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = filtered_data)
+IDrandomInterceptOnly_Agent <-lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = df_Agent)
 # Add both ID and Starting Position as random intercepts
-TrialIDrandomIntercept_Agent <-lmer(AbsolutErrorR ~ 1 + (1|StartPointID) + (1|SubjectID), data = filtered_data)
+TrialIDrandomIntercept_Agent <-lmer(AbsolutErrorR ~ 1 + (1|StartPointID) + (1|SubjectID), data = df_Agent)
 cat("Including Id and starting position as random effects significantly improves the fit of the model\n")
 ```
 
