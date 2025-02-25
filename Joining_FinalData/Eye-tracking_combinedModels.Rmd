@@ -18,8 +18,8 @@ knitr::opts_chunk$set(comment = NA)  # Removes all hashtags from output in HTML
 
 # Load required packages
 library_packages <- c(
-  "readr",  "dplyr", "lme4", "car", "emmeans", "MASS", "jtools", 
-  "lmerTest", "gmodels", "nlme", "multcompView", "ggplot2", "sjPlot", "sjstats"
+  "readr",  "dplyr", "lme4", "car", "emmeans", "MASS", "jtools", "brms",
+  "lmerTest", "gmodels", "nlme", "multcompView", "ggplot2", "sjPlot", "sjstats", "MuMIn","effectsize"
 )
 lapply(library_packages, library, character.only = TRUE)
 
@@ -70,7 +70,7 @@ head(Merged_Data)
 
 
 ```{r}
-HumanA_Fixations <- Merged_Data %>%   
+HumanA_Fixations <- HumanA_Fixations %>%   
   # Recoding variables   
   mutate(
     ContextEffect = case_when(
@@ -264,7 +264,7 @@ qqp(df$AbsolutErrorR, "norm")
 qqp(df$AbsolutErrorR, "lnorm")
 ```
 ```{r}
-unique(HumanA_Fixations$SubjectID) 
+unique(df$SubjectID) 
 ```
 
 
@@ -364,10 +364,10 @@ print(agent_building_stats)
 interceptOnly <- gls(AbsolutError ~ 1, data = df, method = "ML")
 
 # Add ID as random intercept
-IDrandomInterceptOnly <- lmer(AbsolutError ~ 1 + (1|SubjectID), data = df)
+IDrandomInterceptOnly <- lmer(AbsolutError ~ 1 + (1|SubjectID), data = filtered_data)
 
 # Add both ID and Starting Position as random intercepts
-StartlocationsrandomIntercept <- lmer(AbsolutError ~ 1 + (1|SubjectID) + (1|PointingTaskStartingLocations), data = df)
+StartlocationsrandomIntercept <- lmer(AbsolutError ~ 1 + (1|SubjectID) + (1|PointingTaskStartingLocations), data = filtered_data)
 anova( IDrandomInterceptOnly, StartlocationsrandomIntercept)
 cat("Including Id and starting position as random effects significantly improves the fit of the model\n")
 ```
@@ -378,6 +378,19 @@ cat("Including Id and starting position as random effects significantly improves
 # Just behavioral
 
 TwofactorInteraction_No_Eye <-update(StartlocationsrandomIntercept, .~. + ContextEffectf*Agent_Action_levelf + AgentPresencef + Matchf)
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(TwofactorInteraction_No_Eye)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(TwofactorInteraction_No_Eye, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(TwofactorInteraction_No_Eye, partial = TRUE)
+print(eta_sq_results)
+
+summary(TwofactorInteraction_No_Eye)
 # Model summary
 summary(TwofactorInteraction_No_Eye)
 # Anova test for the model
@@ -394,6 +407,9 @@ summary(TwofactorInteraction_Agent)
 # Anova test for the model
 Anova(TwofactorInteraction_Agent)
 ```
+
+
+
 
 ```{r}
 plot_model(TwofactorInteraction_Agent, show.values = TRUE, value.offset = .3, colors="bw",  vline.color = "red")
@@ -417,7 +433,7 @@ linear_model <- lm(AbsolutError ~ Dwelling_Time_Building_Gaze + Dwelling_Time_Ag
 
 # Complete model with all predictors
 Complete_model <- update(StartlocationsrandomIntercept, 
-                        . ~ . + Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +  ContextEffectf*Agent_Action_levelf + Matchf + mean
+                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze +  ContextEffectf*Agent_Action_levelf + Matchf 
                         
                         )
 
@@ -437,6 +453,25 @@ anova(Complete_model, Complete_model_NOMATCH)
 
 ```
 ```{r}
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(Complete_model)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(Complete_model, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(Complete_model, partial = TRUE)
+print(eta_sq_results)
+
+summary(Complete_model)
+
+# Anova test for the model
+Anova(Complete_model)
+```
+
+```{r}
 plot_model(Complete_model, type="re", order.terms = TRUE)
 
 plot_model(Complete_model, show.values = TRUE, value.offset = .3, colors="bw",  vline.color = "red")
@@ -446,12 +481,31 @@ library(data.table)
 model_df <- data.table(coef(summary(Complete_model)), keep.rownames = 'term')
 write.csv(model_df, "/Volumes/TwoTeras/Resources/Complete_model.csv")
 ```
+
 ```{r}
-# Register parallel backend
-library(doParallel)
-cl <- makeCluster(detectCores() - 1)  # Leave one core free for other tasks
-registerDoParallel(cl)
+
+bayesian_performance_model <- brm(
+  AbsolutError ~ Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +  ContextEffectf + Agent_Action_levelf + Matchf + mean + (1 | SubjectID/PointingTaskStartingLocations),
+  data = df,
+  family = gaussian(),
+  cores = 4,
+  chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+
 ```
+
+
+```{r}
+library(data.table)
+# Extract Bayesian model estimates
+model_df <- data.table(summary(bayesian_performance_model), keep.rownames = "term")
+
+# Save to CSV
+write.csv(model_df, "/Volumes/TwoTeras/Resources/bayes_model_performance.csv", row.names = FALSE)
+
+```
+
 ```{r}
 # Assuming you have the model fitted as 'model'
 model <- lmer(AbsolutError ~ (1 | SubjectID) + (1 | PointingTaskStartingLocations) +  
@@ -459,6 +513,10 @@ model <- lmer(AbsolutError ~ (1 | SubjectID) + (1 | PointingTaskStartingLocation
                 ContextEffectf:Agent_Action_levelf + ContextEffectf:Matchf +  
                 Agent_Action_levelf:Matchf + ContextEffectf:Agent_Action_levelf:Matchf, 
               data = df)
+```
+
+```{r}
+
 ```
 
 

@@ -20,7 +20,7 @@ knitr::opts_chunk$set(comment = NA)  # Removes all hashtags from output in HTML
 # Load required packages
 library_packages <- c(
   "readr", "dlookr", "dplyr", "lme4", "car", "emmeans", "MASS", "jtools", 
-  "lmerTest", "gmodels", "nlme", "multcompView", "ggplot2", "sjPlot", "sjstats"
+  "lmerTest", "gmodels", "nlme", "multcompView", "ggplot2", "sjPlot", "sjstats", "MuMIn","effectsize"
 )
 lapply(library_packages, library, character.only = TRUE)
 
@@ -203,6 +203,17 @@ cat("Including Id  as random effect significantly improves the fit of the model\
 IDrandomInterceptOnly <- lmer(Dwelling_Time_Agent_Gaze ~ 1 + (1|SubjectID),  data = filtered_data)
 
 Gaze_Prediction <- update(IDrandomInterceptOnly,  .~. +  ContextEffect*Agent_Action_level + Matchf)
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(Gaze_Prediction)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(Gaze_Prediction, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(Gaze_Prediction, partial = TRUE)
+print(eta_sq_results)
 
 summary(Gaze_Prediction)
 ```
@@ -211,6 +222,19 @@ summary(Gaze_Prediction)
 
 IDrandomInterceptOnly <- lmer(Dwelling_Time_Building_Gaze ~ 1 + (1|SubjectID),  data = filtered_data)
 Gaze_Prediction_Building <- update(IDrandomInterceptOnly,  .~. +  ContextEffect*Agent_Action_level + Matchf)
+
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(Gaze_Prediction_Building)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(Gaze_Prediction_Building, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(Gaze_Prediction_Building, partial = TRUE)
+print(eta_sq_results)
+
 
 summary(Gaze_Prediction_Building,  scientific=FALSE)
 ```

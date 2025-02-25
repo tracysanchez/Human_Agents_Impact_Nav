@@ -206,7 +206,7 @@ qqline(df_long$Entropy, col = "red")
 
 ```{r}
 bayesian_time_model <- brm(
-  Entropy ~ Pre_Post_Effect + s(Event_Index, k = 5) + (1 | ID/Session),
+  Entropy ~ Pre_Post_Effect + s(Event_Index, k = 5summar) + (1 | ID/Session),
   data = df_long,
   family = gaussian(),
   cores = parallel::detectCores(),
@@ -236,7 +236,7 @@ library(data.table)
 model_df <- data.table(coef(summary(bayesian_time_model)), keep.rownames = "term")
 
 # Save to CSV
-write .csv(model_df, "/Volumes/TwoTeras/Resources/bayes_model.csv", row.names = FALSE)
+write.csv(model_df, "/Volumes/TwoTeras/Resources/bayes_model.csv", row.names = FALSE)
 
 ```
 

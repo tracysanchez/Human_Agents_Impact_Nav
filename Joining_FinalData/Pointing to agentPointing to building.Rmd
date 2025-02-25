@@ -119,9 +119,23 @@ PointingLocations <- lmer(AbsolutErrorR ~ 1 + (1 | StartPointID) + (1 | SubjectI
 anova(IDrandomIntercept, PointingLocations)
 ```
 ```{r}
+library(effectsize)
+
 # Model with Task as a predictor
 contrastM <- update(PointingLocations, . ~ . + Task)
+
+# Summary of the model
 summary(contrastM)
+
+# ANOVA test (Type III sum of squares)
+anova_results_task <- Anova(contrastM, type = "III")
+
+# Compute eta squared (η²)
+eta_sq_task <- eta_squared(contrastM, partial = TRUE)
+
+# Print results
+print(anova_results_task)
+print(eta_sq_task)
 
 # Estimated marginal means and pairwise comparisons
 emmeans(contrastM, pairwise ~ Task)

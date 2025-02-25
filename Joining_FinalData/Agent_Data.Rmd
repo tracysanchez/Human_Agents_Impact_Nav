@@ -73,7 +73,7 @@ head(Merged_Data)
 
 
 ```{r}
-HumanA_Agent <- Merged_Data %>% 
+HumanA_Agent <- HumanA_Agent %>% 
   dplyr::filter(!SubjectID %in% c(4580, 3540)) %>%
   mutate(
     ContextEffect = dplyr::recode(Context, 
@@ -227,21 +227,58 @@ unique_ids_df
 interceptOnly_Agent<-gls(AbsolutErrorR ~ 1, data = df_Agent, 
                     method = "ML")
 # Add ID as random intercept
-IDrandomInterceptOnly_Agent <-lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = df_Agent)
+IDrandomInterceptOnly_Agent <-lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = filtered_data)
 # Add both ID and Starting Position as random intercepts
-TrialIDrandomIntercept_Agent <-lmer(AbsolutErrorR ~ 1 + (1|StartPointID) + (1|SubjectID), data = df_Agent)
+TrialIDrandomIntercept_Agent <-lmer(AbsolutErrorR ~ 1 +  (1|SubjectID) + (1|StartPointID) , data = filtered_data)
 cat("Including Id and starting position as random effects significantly improves the fit of the model\n")
 ```
 
 ```{r}
 # Just behavioral
 # No Eye-tracking
-No_Eye_tracking <- update(TrialIDrandomIntercept_Agent, .~. + ContextEffectf*Agent_Action_levelf + max )
+No_Eye_tracking <- update(TrialIDrandomIntercept_Agent, .~. + ContextEffectf*Agent_Action_levelf )
 # Model summary
 summary(No_Eye_tracking)
 # Anova test for the model
 Anova(No_Eye_tracking)
 ```
+```{r}
+# Load required packages
+library(lme4)
+library(car)
+library(effectsize)
+
+# Model with only intercept
+interceptOnly_Agent <- gls(AbsolutErrorR ~ 1, data = df_Agent, method = "ML")
+
+# Add ID as a random intercept
+IDrandomInterceptOnly_Agent <- lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = filtered_data)
+
+# Add both ID and Starting Position as random intercepts
+TrialIDrandomIntercept_Agent <- lmer(AbsolutErrorR ~ 1 +  (1|SubjectID) + (1|StartPointID), data = filtered_data)
+
+cat("Including ID and starting position as random effects significantly improves the fit of the model\n")
+
+# Behavioral Model (No Eye-tracking)
+No_Eye_tracking <- update(TrialIDrandomIntercept_Agent, .~. + ContextEffectf * Agent_Action_levelf)
+
+# Model summary
+summary(No_Eye_tracking)
+
+# ANOVA test (Type III sum of squares)
+anova_results <- Anova(No_Eye_tracking, type = "III")
+
+# Calculate eta squared (η²)
+eta_sq_results <- eta_squared(No_Eye_tracking, partial = TRUE) 
+
+# Print results
+print(anova_results)
+print(eta_sq_results)
+
+```
+
+
+
 ```{r}
 # Load necessary libraries
 library(lme4)
@@ -278,10 +315,25 @@ print(pairs_interaction)
 ```{r}
 # Complete model with all predictors
 Complete_model <- update(TrialIDrandomIntercept_Agent, 
-                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze +   ContextEffectf*Agent_Action_levelf + mean)
+                         . ~ . + Dwelling_Time_Building_Gaze + 
+                               Dwelling_Time_Agent_Gaze + 
+                               ContextEffectf * Agent_Action_levelf)
+
 # Model summary
 summary(Complete_model)
+
+# ANOVA test (Type III sum of squares)
+anova_results_complete <- Anova(Complete_model, type = "III")
+
+# Compute eta squared (η²)
+eta_sq_complete <- eta_squared(Complete_model, partial = TRUE)
+
+# Print results
+print(anova_results_complete)
+print(eta_sq_complete)
 ```
+
+
 ```{r}
 library(data.table)
 model_df <- data.table(coef(summary(Complete_model)), keep.rownames = 'term')

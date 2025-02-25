@@ -6,8 +6,14 @@ date: "2024-06-14"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(lme4);library(dplyr);library(ggplot2);library(emmeans)
+library(lme4)
+library(MuMIn)
+library(car)
+library(effectsize)
 ```
+
+
+
 
 ```{r}
 Coverage <- read.csv('/Volumes/TwoTeras/Graph_Stuff/CSVs/Unique_NodeVisit_Ratios.csv')
@@ -45,8 +51,8 @@ print(unique_id_counts)
 
 Coverage$Session <- as.factor(Coverage$Session)
 contrasts(Coverage$Session ) <- contr.treatment(5)
-
 ```
+
 ```{r}
 # based on variable values
 # Filter the rows where Experiment == -0.5
@@ -64,17 +70,100 @@ unique_ids <- unique(Coverage$ParticipantID)
 unique_ids
 ```
 
+`
+
+
+
 ```{r}
 
-Coverage_model <- lmer(IndividualRatio ~ Session*Experiment + (1 | ParticipantID), data = Coverage)
+Coverage_model <- lmer(IndividualRatio ~ SessionNr*Experiment + (1 | ParticipantID), data = Coverage)
 summary(Coverage_model)
+
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(Coverage_model)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(Coverage_model, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(Coverage_model, partial = TRUE)
+print(eta_sq_results)
 ```
+
+
+```{r}
+# Load necessary libraries
+
+
+library(MuMIn)
+library(pwr)
+
+# Compute R² values for the mixed model
+r2_values <- r.squaredGLMM(Coverage_model)
+
+# Extract Marginal R² (variance explained by fixed effects)
+r2_marginal <- r2_values[1,1]  # First column is R²m
+print(paste("Marginal R² (fixed effects):", r2_marginal))
+
+# Compute Cohen’s f² using the dynamically obtained R²m
+f2_value <- r2_marginal / (1 - r2_marginal)
+print(paste("Cohen's f²:", f2_value))
+
+
+
+# Compute power using the dynamically obtained f² value
+power_result <- pwr.f2.test(u = 4, v = 260, f2 = f2_value, sig.level = 0.05, power = NULL)
+
+# Print the estimated power
+print(power_result)
+
+
+
+
+```
+
+
 ```{r}
 
 Coverage_model <- lmer(CummulativeRatio ~ Session*Experiment + (1 | ParticipantID), data = Coverage)
 summary(Coverage_model)
 
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(Coverage_model)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(Coverage_model, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(Coverage_model, partial = TRUE)
+print(eta_sq_results)
+
 ```
+```{r}
+# Compute R² values for the mixed model
+r2_values <- r.squaredGLMM(Coverage_model)
+
+# Extract Marginal R² (variance explained by fixed effects)
+r2_marginal <- r2_values[1,1]  # First column is R²m
+print(paste("Marginal R² (fixed effects):", r2_marginal))
+
+# Compute Cohen’s f² using the dynamically obtained R²m
+f2_value <- r2_marginal / (1 - r2_marginal)
+print(paste("Cohen's f²:", f2_value))
+
+
+
+# Compute power using the dynamically obtained f² value
+power_result <- pwr.f2.test(u = 4, v = 260, f2 = f2_value, sig.level = 0.05, power = NULL)
+
+# Print the estimated power
+print(power_result)
+```
+
 
 
 ```{r}
@@ -140,6 +229,18 @@ contrasts(Navigation$Session ) <- contr.treatment(5)
 ```{r}
 Decisions <- lmer(StrategyCount ~ Session * Strategy + Experiment + (1 | ParticipantId), data = Navigation)
 summary(Decisions)
+
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(Decisions)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(Decisions, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(Decisions, partial = TRUE)
+print(eta_sq_results)
 ```
 ## Agent bias
 ```{r}
@@ -169,6 +270,17 @@ contrasts(AgentBias$Session) <- contr.treatment(5, base = 1)
 # Fit a linear mixed-effects model with interaction terms
 visit_model <- lmer(Total ~ Session * ExperimentGroup + (1 | ParticipantId), data = AgentBias)
 
+# Compute R-squared values (marginal and conditional)
+r2_values <- r.squaredGLMM(visit_model)
+print(r2_values)  # R²m (fixed effects), R²c (fixed + random effects)
+
+# Perform Type II ANOVA to get effect sizes
+anova_results <- Anova(visit_model, type = "II")
+print(anova_results)
+
+# Compute eta-squared (η²) for fixed effects
+eta_sq_results <- eta_squared(visit_model, partial = TRUE)
+print(eta_sq_results)
 summary(visit_model)
 ```
 ```{r}
