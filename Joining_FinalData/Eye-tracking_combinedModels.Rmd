@@ -70,7 +70,7 @@ head(Merged_Data)
 
 
 ```{r}
-HumanA_Fixations <- HumanA_Fixations %>%   
+HumanA_Fixations <- Merged_Data %>%   
   # Recoding variables   
   mutate(
     ContextEffect = case_when(
@@ -108,7 +108,6 @@ HumanA_Fixations <- HumanA_Fixations %>%
     Dwelling_Time_Building_Gaze_Centered = Dwelling_Time_Building_Gaze - mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
     Dwelling_Time_Agent_Gaze_Centered = Dwelling_Time_Agent_Gaze - mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE)
   )
-
 
 ```
 

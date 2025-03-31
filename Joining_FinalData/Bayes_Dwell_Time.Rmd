@@ -1,0 +1,88 @@
+---
+title: "Bayes_Dwell_Time"
+output: html_document
+date: "2025-03-10"
+---
+
+```{r setup, include=FALSE}
+# Load required packages
+library(dplyr)         # Data manipulation
+library(ggplot2)       # Visualization
+library(readr)         # Reading CSV files
+library(lubridate)     # Working with dates and timestamps
+library(zoo)           # Required for time-series data
+library(tidyverse)     # Meta-package (includes dplyr, ggplot2, tidyr, etc.)
+library(tidyr)         # Data tidying functions
+library(brms)          # Bayesian regression modeling via Stan
+library(stringr)       # String manipulation (used for ID extraction)
+```
+
+```{r message=FALSE, warning=FALSE, echo=TRUE}
+
+
+# Define directories for each experiment
+dwell_times <- read.csv("/Volumes/TwoTeras/Resources/Bayes_stacked_dwell_Time.csv")
+```
+
+```{r}
+library(dplyr)
+
+# Create the Object and Congruency variables
+dwell_times <- dwell_times %>%
+  mutate(Object = ifelse(grepl("Agent", Collider_CategoricalN), "Agent", "Building"),
+         Object = factor(Object, levels = c("Building", "Agent"), labels = c(0.5, -0.5)),
+         Congruency = case_when(
+           Agent_type == "Congruent" ~ 0.5,
+           Agent_type == "Incongruent" ~ -0.5,
+           Agent_type == "Passive" ~ 0
+         ))
+
+# Print first few rows to verify
+head(dwell_times)
+
+```
+```{r}
+prop.table(table(dwell_times$Object))
+prop.table(table(dwell_times$Congruency))
+
+```
+```{r}
+# Ensure SessionNr is a factor
+dwell_times$SessionNr <- factor(dwell_times$SessionNr)
+
+# Set contrasts so that the first session is the reference level
+contrasts(dwell_times$SessionNr) <- contr.treatment(nlevels(dwell_times$SessionNr), base = 1)
+
+# Verify contrasts
+contrasts(dwell_times$SessionNr)
+```
+```{r}
+
+qqnorm(dwell_times$Dwelling_Time)
+qqline(dwell_times$Dwelling_Time, col = "red")
+```
+
+```{r}
+
+
+bayes_model_Gamma <- brm(
+  Dwelling_Time ~ Object * Congruency + (1 | ParticipantID) + (1 | SessionNr),
+  data = dwell_times,
+  family = Gamma(link = "log"),  
+  prior = c(
+    prior(normal(0, 1), class = "b"),
+    prior(cauchy(0, 2.5), class = "Intercept"),
+    prior(cauchy(0, 2.5), class = "sd")
+  ),
+  chains = 4, iter = 4000, warmup = 2000, cores = 4
+)
+
+# View summary of the updated model
+summary(bayes_model_Gamma)
+
+
+```
+
+
+
+

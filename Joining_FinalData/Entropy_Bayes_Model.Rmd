@@ -1,0 +1,584 @@
+---
+title: "Eye-Tracking_combinedModels"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    toc_depth: 6
+    mathjax: null
+    css: doc.css # To set style to maximum in a separate file
+---
+```{r setup, include=FALSE}
+# Load required packages
+library(dplyr)         # Data manipulation
+library(ggplot2)       # Visualization
+library(readr)         # Reading CSV files
+library(lubridate)     # Working with dates and timestamps
+library(zoo)           # Required for time-series data
+library(tidyverse)     # Meta-package (includes dplyr, ggplot2, tidyr, etc.)
+library(tidyr)         # Data tidying functions
+library(brms)          # Bayesian regression modeling via Stan
+library(stringr)       # String manipulation (used for ID extraction)
+library(mice)          # For missing data
+library(bridgesampling)
+
+```
+
+
+
+```{r echo = FALSE, warning = FALSE}
+HumanA_Fixations <- read.csv("/Volumes/TwoTeras/2_DataSets_Experiments_1_2/BehavioralData_Fixations_Wide.csv", sep =",")
+head(HumanA_Fixations)
+```
+
+
+```{r}
+unique(HumanA_Fixations$SubjectID)
+```
+```{r}
+Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM_Chao_Shen_Normalized.csv", sep =",")
+# Ensure Entropy is a data frame or tibble
+Entropy <- as.data.frame(Entropy)
+
+# Drop columns X and Experiment using base R
+Entropy <- Entropy[, !(names(Entropy) %in% c("X", "Experiment"))]
+
+# View the updated dataset
+head(Entropy)
+unique(Entropy$Participant_ID)
+```
+
+```{r}
+
+# Rename columns in the Entropy dataset
+Entropy <- Entropy %>%
+  rename(
+    avatar_ID=  Agent_ID,
+    SubjectID= Participant_ID
+  )
+
+Entropy <- Entropy %>%
+  mutate(SubjectID = as.integer(SubjectID))
+
+# Perform concatenation based on avatar_ID and SubjectID
+Merged_Data <- HumanA_Fixations %>%
+  inner_join(Entropy, by = c("avatar_ID", "SubjectID"))
+
+# View the merged dataset
+head(Merged_Data)
+```
+
+```{r}
+
+
+
+Merged_Data <- Merged_Data %>% 
+  # Recoding variables
+  mutate(
+    ContextEffect = case_when(
+      Context == "False" ~ -0.5,
+      Context == "True" ~ 0.5,
+      TRUE ~ NaN
+    ),
+    AgentPresence = case_when(
+      AvatarPresenceCategory == "Omitted" ~ -0.5,
+      AvatarPresenceCategory == "Present" ~ 0.5,
+      TRUE ~ NaN
+    ),
+    Agent_Action_level = case_when(
+      Agent_Category == "Passive" ~ -0.5,
+      Agent_Category == "Active" ~ 0.5,
+      TRUE ~ NaN
+    ),
+    Experiment = case_when(
+      Experiment == 1 ~ -0.5,
+      Experiment == 2 ~ 0.5,
+      TRUE ~ NaN
+    ),
+    # Define Agent_Type variable for contrast coding
+    Agent_Type = case_when(
+      Agent_Action_level == -0.5 ~ 0,   # Passive -> Acontextual
+      Agent_Action_level == 0.5 & Experiment == -0.5 ~ 0.5,  # Active + Experiment 1 -> Congruent
+      Agent_Action_level == 0.5 & Experiment == 0.5 ~ -0.5,  # Active + Experiment 2 -> Incongruent
+      TRUE ~ NaN
+    )
+  ) %>%
+  # Convert numeric variables to factors and set "Acontextual" as the reference level
+  mutate(
+    ContextEffectf = factor(ContextEffect, levels = c(-0.5, 0.5), labels = c('Residential', 'Public')),
+    AgentPresencef = factor(AgentPresence, levels = c(-0.5, 0.5), labels = c('Omitted', 'Displayed')),
+    Agent_Action_levelf = factor(Agent_Action_level, levels = c(-0.5, 0.5), labels = c('Passive', 'Active')),
+    Experimentf = factor(Experiment, levels = c(-0.5, 0.5), labels = c('Experiment 1', 'Experiment 2')),
+    Agent_Typef = factor(Agent_Type, levels = c(0, 0.5, -0.5), labels = c('Acontextual', 'Congruent', 'Incongruent'))
+  ) %>%
+  # Ensure "Acontextual" is the reference level for contrast coding
+  mutate(Agent_Typef = relevel(Agent_Typef, ref = "Acontextual"))
+
+
+
+
+# Continue pipeline with centering dwelling time variables
+Merged_Data <- Merged_Data %>%
+  mutate(
+    Dwelling_Time_Building_Gaze_Centered = Dwelling_Time_Building_Gaze - mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    Dwelling_Time_Agent_Gaze_Centered = Dwelling_Time_Agent_Gaze - mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE)
+  )
+
+# Display first few rows to verify changes
+head(Merged_Data)
+
+```
+```{r}
+Merged_Data$Agent_Typef <- relevel(Merged_Data$Agent_Typef, ref = "Acontextual")
+contrasts(Merged_Data$Agent_Typef) <- contr.treatment(n = 3, base = 1)
+
+```
+
+
+
+```{r}
+
+df <- Merged_Data %>% 
+  filter(complete.cases(.))
+
+p <- ggplot(df, aes(x = AbsolutError, fill = Agent_Action_levelf)) +
+  
+  geom_histogram(aes(group = Agent_Action_levelf), 
+                 position = "identity", 
+                 alpha = 0.5, 
+                 binwidth = 10) +
+  
+  facet_grid(cols = vars(ContextEffectf)) +
+  
+  theme_bw()
+
+# Print the plot
+p
+```
+
+```{r}
+colSums(is.na(Merged_Data))
+```
+
+
+```{r}
+imputed_data <- mice(Merged_Data, method = "pmm", m = 5)
+```
+```{r}
+Merged_Data_Imputed <- complete(imputed_data)
+```
+
+```{r}
+Merged_Data <- Merged_Data_Imputed %>%
+  mutate(across(c(Dwelling_Time_Building_Gaze_Centered, Dwelling_Time_Agent_Gaze_Centered, mean), scale))
+
+```
+
+```{r}
+contrast_matrix_pairwise <- matrix(
+  c(-0.5, -0.5,  0.0,   # Acontextual
+     0.5,  0.0, -0.5,   # Congruent
+     0.0,  0.5,  0.5),  # Incongruent
+  ncol = 3,
+  byrow = TRUE
+)
+
+rownames(contrast_matrix_pairwise) <- c("Acontextual", "Congruent", "Incongruent")
+colnames(contrast_matrix_pairwise) <- c("Congruent_vs_Acontextual", "Incongruent_vs_Acontextual", "Congruent_vs_Incongruent")
+
+contrasts(Merged_Data$Agent_Typef) <- contrast_matrix_pairwise
+
+```
+
+
+```{r}
+bayesian_performance_model <- brm(
+  AbsolutError ~ Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +
+    ContextEffectf + Agent_Typef*median + 
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data = Merged_Data,
+  family = Gamma(link = "log"),  # Use lognormal or another appropriate family
+  cores = 4, chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+
+```
+```{r}
+plot(bayesian_performance_model_no_inter, pars = c(
+  "b_Intercept",
+  "b_Dwelling_Time_Building_Gaze_Centered",
+  "b_Dwelling_Time_Agent_Gaze_Centered",
+  "b_ContextEffectfPublic",
+  "b_Agent_Typef2",
+  "b_Agent_Typef3",
+  "b_median"
+)) +
+  theme_minimal() +
+  labs(title = "Posterior Coefficient Estimates",
+       y = "Coefficients",
+       x = "Estimate (95% Credible Interval)")
+
+```
+```{r}
+library(patchwork)
+conditional_effects(bayesian_performance_model_no_inter, effects = c(
+  "Dwelling_Time_Building_Gaze_Centered",
+  "Dwelling_Time_Agent_Gaze_Centered",
+  "median"
+)) %>%
+  plot(points = TRUE, plot = FALSE) %>%
+  patchwork::wrap_plots(ncol = 1) +
+  plot_annotation(title = "Marginal Effects of Continuous Predictors")
+
+```
+```{r}
+install.packages(c("broom.mixed", "dotwhisker"))
+library(broom.mixed)
+library(dotwhisker)
+
+```
+```{r}
+# Extract tidy coefficients from your model
+tidy_model <- broom.mixed::tidy(bayesian_performance_model_no_inter, effects = "fixed", conf.int = TRUE, conf.level = 0.95)
+
+# Quickly plot betas with credible intervals
+dotwhisker::dwplot(tidy_model) +
+  theme_bw() +
+  labs(title = "Regression Coefficient Estimates",
+       x = "Estimate (with 95% CI)",
+       y = "Predictors")
+
+```
+```{r}
+
+
+# Extract fixed effects estimates and credible intervals
+betas_df <- broom.mixed::tidy(bayesian_performance_model_no_inter, effects = "fixed", conf.int = TRUE, conf.level = 0.95)
+
+# Select and rename relevant columns clearly
+betas_clean <- betas_df[, c("term", "estimate", "conf.low", "conf.high")]
+colnames(betas_clean) <- c("Predictor", "Estimate", "CI_lower", "CI_upper")
+
+# Export as CSV
+write.csv(betas_clean, "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/Performance_model_betas.csv", row.names = FALSE)
+
+```
+
+
+
+
+```{r}
+# Compute LOO for each model
+loo_no_int <- loo(bayesian_performance_model_no_inter)
+loo_int <- loo(bayesian_performance_model)
+
+# Compare the models
+loo_compare(loo_no_int, loo_int)
+```
+
+
+
+```{r}
+# Remove one predictor at a time
+model_no_Building <- update(bayesian_performance_model, formula = . ~ . - Dwelling_Time_Building_Gaze_Centered,  
+                                 cores = 4)
+model_no_Agent <- update(bayesian_performance_model, formula = . ~ . - Dwelling_Time_Agent_Gaze_Centered, 
+                                 cores = 4)
+model_no_Context <- update(bayesian_performance_model, formula = . ~ . - ContextEffectf, 
+                                 cores = 4)
+model_no_Median <- update(bayesian_performance_model, formula = . ~ . - median, 
+                                 cores = 4)
+```
+
+
+```{r}
+
+model_no_AgentTypeAcontextual_vs_Congruent <- update(bayesian_performance_model, formula = . ~ . - Agent_Typef2, 
+                                 cores = 4,
+                                newdata = Merged_Data)
+model_no_Agent_TypefAcontextual_vs_Incongruent <- update(bayesian_performance_model, formula = . ~ . - Agent_Typef3, 
+                                 cores = 4,
+                                newdata = Merged_Data)
+
+```
+
+
+```{r}
+
+
+# Compute marginal likelihoods using bridge sampling
+bridge_full <- bridge_sampler(bayesian_performance_model)
+bridge_Building <- bridge_sampler(model_no_Building)
+bridge_Agent <- bridge_sampler(model_no_Agent)
+bridge_Context <- bridge_sampler(model_no_Context)
+bridge_model_no_AgentTypeAcontextual_vs_Congruent <- bridge_sampler(model_no_AgentTypeAcontextual_vs_Congruent)
+bridge_model_no_AgentTypeAcontextual_vs_Incongruent <- bridge_sampler(model_no_Agent_TypefAcontextual_vs_Incongruent)
+bridge_Median <- bridge_sampler(model_no_Median)
+
+```
+```{r}
+# Compute Bayes Factors (BF) against the full model
+bf_Building <- bf(bridge_full, bridge_Building)
+bf_Agent <- bf(bridge_full, bridge_Agent)
+bf_Context <- bf(bridge_full, bridge_Context)
+bf_Median <- bf(bridge_full, bridge_Median)
+bf_AgentTypeAcontextual_vs_Congruent <- bf(bridge_full, bridge_model_no_AgentTypeAcontextual_vs_Congruent)
+bf_AgentTypeAcontextual_vs_Incongruent <- bf(bridge_full, bridge_model_no_AgentTypeAcontextual_vs_Incongruent)
+
+```
+
+```{r}
+# Print Bayes Factor results
+print(bf_Building)
+print(bf_Agent)
+print(bf_Context)
+print(bf_AgentTypeAcontextual_vs_Congruent)
+print(bf_AgentTypeAcontextual_vs_Incongruent)
+print(bf_Median)
+
+```
+
+```{r}
+# Create a dataframe for Bayes Factors with updated predictor labels
+bf_data <- data.frame(
+  Predictor = c("Building Type", "Dwell on Building", "Agent Congruent","Agent Incongruent", "Entropy", "Dwell Agent"),  
+  BayesFactor = c(as.numeric(bf_Context$bf), as.numeric(bf_Building$bf), as.numeric(bf_AgentTypeAcontextual_vs_Congruent$bf), 
+                  as.numeric(bf_AgentTypeAcontextual_vs_Incongruent$bf), as.numeric(bf_Median$bf), as.numeric(bf_Agent$bf))
+)
+
+# Log transform for readability
+bf_data$LogBF <- log10(bf_data$BayesFactor)
+
+# Classify evidence strength
+bf_data$Category <- ifelse(bf_data$BayesFactor > 30, "Strong Evidence",
+                        ifelse(bf_data$BayesFactor > 3, "Moderate Evidence",
+                        ifelse(bf_data$BayesFactor > 1, "Weak Evidence", "Against Inclusion")))
+
+
+
+```
+```{r}
+
+# Create a bar plot with the updated y-axis tick labels
+ggplot(bf_data, aes(x = reorder(Predictor, LogBF), y = LogBF, fill = Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(BayesFactor, 2)), hjust = 1.2, color = "white", size = 4) +
+  scale_fill_manual(values = c("Strong Evidence" = "darkred", "Moderate Evidence" = "orange",
+                               "Weak Evidence" = "yellow", "Against Inclusion" = "blue")) +
+  labs(title = "Bayes Factors for Predictors",
+       subtitle = "Log-transformed Bayes Factors (BF > 1 favors inclusion, BF < 1 favors exclusion)",
+       x = "Predictor",
+       y = "Log10(Bayes Factor)") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes for readability
+
+
+```
+```{r}
+# Example using ggplot2 to visualize the distribution of absolute error by Agent_Typef
+
+library(ggplot2)
+
+ggplot(Merged_Data, aes(x = Agent_Typef, y = AbsolutError)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(x = "Agent Type",
+       y = "Absolute Pointing Error (ε)",
+       title = "Distribution of Absolute Pointing Error by Agent Type") +
+  theme_minimal()
+
+```
+```{r}
+
+# Get the conditional effects for Agent_Typef
+ce <- conditional_effects(bayesian_performance_model, effects = "Agent_Typef")
+
+# Basic plot using brms' built-in plotting function:
+plot(ce, ask = FALSE)
+
+# Alternatively, to customize the plot using ggplot2:
+ce_data <- as.data.frame(ce$Agent_Typef)
+ggplot(ce_data, aes(x = Agent_Typef, y = estimate__)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = lower__, ymax = upper__), width = 0.2) +
+  labs(x = "Agent Type",
+       y = "Predicted Absolute Error",
+       title = "Model Predicted Means for Agent_Typef") +
+  theme_minimal()
+
+```
+```{r}
+ce <- conditional_effects(bayesian_performance_model, "Agent_Typef")
+ce_data <- as.data.frame(ce$Agent_Typef)
+head(ce_data)
+
+```
+
+
+
+```{r}
+
+bayesian_performance_model_interaction <- brm(
+  AbsolutError ~ Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +
+    ContextEffectf + Agent_Action_levelf + Matchf*median + 
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data = Merged_Data,
+  family = Gamma(link = "log"),  # Use lognormal or another appropriate family
+  cores = 4, chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+```
+
+```{r}
+# Remove one predictor at a time and specify all 4 cores
+model_no_BuildingInter <- update(bayesian_performance_model_interaction, 
+                                 formula = . ~ . - Dwelling_Time_Building_Gaze_Centered, 
+                                 cores = 4)
+
+model_no_AgentInter <- update(bayesian_performance_model_interaction, 
+                              formula = . ~ . - Dwelling_Time_Agent_Gaze_Centered, 
+                              cores = 4)
+
+model_no_ContextInter <- update(bayesian_performance_model_interaction, 
+                                formula = . ~ . - ContextEffectf, 
+                                cores = 4)
+
+model_no_AgentActionInter <- update(bayesian_performance_model_interaction, 
+                                    formula = . ~ . - Agent_Action_levelf, 
+                                    cores = 4)
+
+model_no_MatchInter <- update(bayesian_performance_model_interaction, 
+                              formula = . ~ . - Matchf, 
+                              cores = 4)
+
+model_no_MedianInter <- update(bayesian_performance_model_interaction, 
+                               formula = . ~ . - median, 
+                               cores = 4)
+# Remove one predictor at a time, now also removing the interaction term
+model_no_InteractionInter <- update(bayesian_performance_model_interaction, 
+                                    formula = . ~ . - MatchfCongruent:median, 
+                                    cores = 4)
+
+
+
+```
+```{r}
+model_no_InteractionInter <- update(bayesian_performance_model_interaction, 
+                                    formula = . ~ . - MatchfCongruent:median, 
+                                    newdata = Merged_Data,  # Ensures data is explicitly provided
+                                    cores = 4)
+
+```
+
+```{r}
+
+
+# Compute marginal likelihoods for full and reduced models
+bridge_fullInter <- bridge_sampler(bayesian_performance_model_interaction)
+
+bridge_BuildingInter <- bridge_sampler(model_no_BuildingInter)
+bridge_AgentInter <- bridge_sampler(model_no_AgentInter)
+bridge_ContextInter <- bridge_sampler(model_no_ContextInter)
+bridge_AgentActionInter <- bridge_sampler(model_no_AgentActionInter)
+bridge_MatchInter <- bridge_sampler(model_no_MatchInter)
+bridge_MedianInter <- bridge_sampler(model_no_MedianInter)
+bridge_InteractionInter <- bridge_sampler(model_no_InteractionInter)  # New: removes interaction
+
+# Compute Bayes Factors for each predictor including the interaction term
+bf_BuildingInter <- bf(bridge_fullInter, bridge_BuildingInter)
+bf_AgentInter <- bf(bridge_fullInter, bridge_AgentInter)
+bf_ContextInter <- bf(bridge_fullInter, bridge_ContextInter)
+bf_AgentActionInter <- bf(bridge_fullInter, bridge_AgentActionInter)
+bf_MatchInter <- bf(bridge_fullInter, bridge_MatchInter)
+bf_MedianInter <- bf(bridge_fullInter, bridge_MedianInter)
+bf_InteractionInter <- bf(bridge_fullInter, bridge_InteractionInter)  # New: interaction term
+
+# Print results
+print(bf_BuildingInter)
+print(bf_AgentInter)
+print(bf_ContextInter)
+print(bf_AgentActionInter)
+print(bf_MatchInter)
+print(bf_MedianInter)
+print(bf_InteractionInter)  # New: prints interaction BF
+
+
+```
+
+```{r}
+# Create a dataframe for Bayes Factors using interaction models
+bf_data_inter <- data.frame(
+  Predictor = c("Building_Gaze", "Agent_Gaze", "ContextEffect", "Agent_Action", "Match", "Median", "Match × Median Interaction"),
+  BayesFactor = c(as.numeric(bf_BuildingInter$bf), as.numeric(bf_AgentInter$bf), 
+                  as.numeric(bf_ContextInter$bf), as.numeric(bf_AgentActionInter$bf), 
+                  as.numeric(bf_MatchInter$bf), as.numeric(bf_MedianInter$bf),
+                  as.numeric(bf_InteractionInter$bf))  # New: interaction term
+)
+
+# Log transform for readability
+bf_data_inter$LogBF <- log10(bf_data_inter$BayesFactor)
+
+# Classify evidence strength
+bf_data_inter$Category <- ifelse(bf_data_inter$BayesFactor > 30, "Strong Evidence",
+                               ifelse(bf_data_inter$BayesFactor > 3, "Moderate Evidence",
+                               ifelse(bf_data_inter$BayesFactor > 1, "Weak Evidence", "Against Inclusion")))
+
+# Plot Bayes Factors
+library(ggplot2)
+
+ggplot(bf_data_inter, aes(x = reorder(Predictor, LogBF), y = LogBF, fill = Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(BayesFactor, 2)), hjust = 1.2, color = "white", size = 4) +
+  scale_fill_manual(values = c("Strong Evidence" = "darkred", "Moderate Evidence" = "orange",
+                               "Weak Evidence" = "yellow", "Against Inclusion" = "blue")) +
+  labs(title = "Bayes Factors for Interaction Model Predictors",
+       subtitle = "Log-transformed Bayes Factors (BF > 1 favors inclusion, BF < 1 favors exclusion)",
+       x = "Predictor",
+       y = "Log10(Bayes Factor)") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes for readability
+
+
+```
+
+```{r}
+
+
+ggplot(bf_data_inter, aes(x = reorder(Predictor, LogBF), y = LogBF, fill = Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(BayesFactor, 2)), hjust = 1.2, color = "white", size = 4) +
+  scale_fill_manual(values = c("Strong Evidence" = "darkred", "Moderate Evidence" = "orange",
+                               "Weak Evidence" = "yellow", "Against Inclusion" = "blue")) +
+  labs(title = "Bayes Factors for Interaction Model Predictors",
+       subtitle = "Log-transformed Bayes Factors (BF > 1 favors inclusion, BF < 1 favors exclusion)",
+       x = "Predictor",
+       y = "Log10(Bayes Factor)") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes for readability
+
+```
+
+
+
+
+
+
+```{r}
+library(bayestestR)
+
+# Compute Bayes Factors for all predictors
+bf_results <- bayesfactor_parameters(bayesian_performance_model)
+
+# Print results
+print(bf_results)
+
+```
+
+
+
+
+
+
