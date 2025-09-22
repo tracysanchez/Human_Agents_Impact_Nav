@@ -185,8 +185,6 @@ contrasts(df_combined$Agent_Type) <- contrast_matrix
 ```
 
 ```{r}
-
-
 library(dplyr)
 
 # Create two subsets
@@ -228,7 +226,7 @@ This format is essential for **Bayesian hierarchical modeling**, where we want t
 
 ```{r message=FALSE, warning=FALSE, echo=TRUE}
 # Reshape the data into long format
-df_long <- df_below_60 %>%
+df_long <- df_combined %>%
   pivot_longer(
     cols = c(Pre_Entropy, Post_Entropy),
     names_to = "Pre_Post",
@@ -265,26 +263,49 @@ qqnorm(df_long$Entropy)
 qqline(df_long$Entropy, col = "red")
 ```
 ```{r}
-# Convert to numeric if necessary
-df_long$Entropy <- as.numeric(as.character(df_long$Entropy))
+sum0  <- sum(df_long$Entropy <= 0, na.rm = TRUE)
+sum1  <- sum(df_long$Entropy >= 1, na.rm = TRUE)
+n_tot <- sum(!is.na(df_long$Entropy))
+c(sum0 = sum0, sum1 = sum1, pct0 = sum0/n_tot, pct1 = sum1/n_tot)
 
-# Cap any values >= 1 to 0.999 to satisfy Beta regression requirements
-df_long$Entropy[df_long$Entropy >= 1] <- 0.999
+```
 
-# (Optionally, you might also adjust any 0's to a small value above 0, e.g., 0.001)
-df_long$Entropy[df_long$Entropy <= 0] <- 0.001
+```{r}
+# Ensure numeric
+df_long$Entropy <- as.numeric(df_long$Entropy)
+
+# Clamp to [0,1] just in case, then map to (0,1)
+n <- sum(!is.na(df_long$Entropy))
+df_long$Entropy <- pmin(pmax(df_long$Entropy, 0), 1)
+df_long$Entropy <- (df_long$Entropy * (n - 1) + 0.5) / n
+
+# Quick sanity check
+range(df_long$Entropy, na.rm = TRUE)  # now strictly between 0 and 1
+mean(df_long$Entropy <= 0 | df_long$Entropy >= 1, na.rm = TRUE)  # should be 0
+
 
 ```
 
 ```{r}
 bayesian_time_model <- brm(
   Entropy ~ Pre_Post_Effect + s(Event_Index, k = 5) + (1 | ID) + (1 | Session),
-  data = df_long,
+  data   = df_long,
   family = Beta(link = "logit"),
-  cores = parallel::detectCores(),
-  chains = 4, iter = 4000, warmup = 1000,
+  chains = 4, iter = 4000, warmup = 1500, cores = parallel::detectCores(),
+  control = list(adapt_delta = 0.995, max_treedepth = 15),
   save_pars = save_pars(all = TRUE)
 )
+
+m0 <- brm(
+  Entropy ~            s(Event_Index, k = 5) + (1 | ID) + (1 | Session),
+  data   = df_long,
+  family = Beta(link = "logit"),
+  chains = 4, iter = 4000, warmup = 1500, cores = parallel::detectCores(),
+  control = list(adapt_delta = 0.995, max_treedepth = 15),
+  save_pars = save_pars(all = TRUE)
+)
+
+
 
 ```
 
@@ -332,10 +353,54 @@ ggplot(ce$Event_Index, aes(x = Event_Index, y = estimate__)) +
   geom_line() +
   geom_ribbon(aes(ymin = lower__, ymax = upper__), alpha = 0.2) +
   labs(title = "Conditional Effect of Event Index on Entropy")
+```
+```{r}
+inv_logit <- brms::inv_logit_scaled
 
+# 1) Posterior draws of fixed effects
+draws <- as_draws_df(bayesian_time_model)
+a0 <- draws$b_Intercept
+aE <- draws$b_Pre_Post_Effect  # name may differ; check fixef() for the exact term
 
+# 2) Pre and post means on probability scale (population-level)
+mu_pre  <- inv_logit(a0 - 0.5 * aE)
+mu_post <- inv_logit(a0 + 0.5 * aE)
+
+summ <- function(x, probs=c(0.025,0.975)) c(mean=mean(x), quantile(x, probs))
+pre_summ  <- summ(mu_pre)
+post_summ <- summ(mu_post)
+
+# 3) Relative increase (%)
+rel_inc <- 100 * (mu_post / mu_pre - 1)
+rel_summ <- summ(rel_inc)
+
+# 4) Smooth drift: early vs late encounters
+kq <- quantile(df_long$Event_Index, c(0.1, 0.9), na.rm=TRUE)
+nd <- data.frame(Pre_Post_Effect = 0,  # effect-coded grand mean
+                 Event_Index = as.numeric(kq),
+                 ID = NA, Session = NA)
+# Population-level (no group offsets)
+ep <- posterior_epred(bayesian_time_model, newdata = nd, re_formula = NA)
+# Columns: early, late
+delta <- ep[,2] - ep[,1]
+delta_summ <- summ(delta)
+
+# 5) Random-intercept SDs
+r_sd <- VarCorr(bayesian_time_model)
+sd_id      <- r_sd$ID$sd[[1]]
+sd_session <- r_sd$Session$sd[[1]]
+
+# 6) Bayes factor (if you want to quote it)
+m0 <- brm(
+  Entropy ~ s(Event_Index, k = 5) + (1 | ID) + (1 | Session),
+  data = df_long, family = Beta(link="logit"),
+  chains=4, iter=4000, warmup=1000, cores=4, save_pars=save_pars(all=TRUE)
+)
+library(bridgesampling)
+bf_val <- bf(bayesian_time_model, m0)$bf
 
 ```
+
 
 ```{r}
 # 📌 Step 1: Check if the model exists

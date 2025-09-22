@@ -1,0 +1,98 @@
+---
+title: "Bayes_Dwell_Time"
+output: html_document
+date: "2025-03-10"
+---
+
+```{r setup, include=FALSE}
+# Load required packages
+library(dplyr)         # Data manipulation
+library(ggplot2)       # Visualization
+library(readr)         # Reading CSV files
+library(lubridate)     # Working with dates and timestamps
+library(zoo)           # Required for time-series data
+library(tidyverse)     # Meta-package (includes dplyr, ggplot2, tidyr, etc.)
+library(tidyr)         # Data tidying functions
+library(brms)          # Bayesian regression modeling via Stan
+library(stringr)       # String manipulation (used for ID extraction)
+```
+
+```{r message=FALSE, warning=FALSE, echo=TRUE}
+
+
+# Define directories for each experiment
+dwell_times <- read.csv("/Volumes/TwoTeras/Resources/Bayes_stacked_dwell_Time.csv")
+```
+
+```{r}
+
+
+# Make Object a clear two-level factor (ref = Building)
+dwell_times <- dwell_times %>%
+  mutate(
+    Object = ifelse(grepl("Agent", Collider_CategoricalN), "Agent", "Building"),
+    Object = factor(Object, levels = c("Building", "Agent"))
+  )
+
+# Make Congruency a three-level factor with Acontextual as reference
+dwell_times <- dwell_times %>%
+  mutate(
+    Congruency = dplyr::recode(Agent_type,
+                               "Passive" = "Acontextual",
+                               "Congruent" = "Congruent",
+                               "Incongruent" = "Incongruent"),
+    Congruency = factor(Congruency, levels = c("Acontextual","Congruent","Incongruent"))
+  )
+
+# Random-effect grouping factors
+dwell_times$SessionNr    <- factor(dwell_times$SessionNr)
+dwell_times$ParticipantID <- factor(dwell_times$ParticipantID)
+```
+
+```{r}
+prop.table(table(dwell_times$Object))
+prop.table(table(dwell_times$Congruency))
+
+```
+```{r}
+# Fit exactly the manuscript model
+# Fixed = dummy coding already set by factor levels
+# No effect-coded copy needed anymore
+
+bayes_model_Gamma <- brm(
+  Dwelling_Time ~ Object * Congruency +
+    (1 | ParticipantID) + (1 | ParticipantID:SessionNr),
+  data   = dwell_times,
+  family = Gamma(link = "log"),
+  prior  = c(
+    prior(normal(0, 1), class = "b"),           # fixed effects 
+    prior(cauchy(0, 2.5), class = "Intercept"), # intercept 
+    prior(cauchy(0, 2.5), class = "sd")         # group-level SDs 
+  ),
+  chains = 4, iter = 6000, warmup = 3000, cores = 4,
+  control = list(adapt_delta = 0.995, max_treedepth = 15),
+  inits = 0
+)
+
+```
+```{r}
+# Names map to manuscript betas:
+# b_ObjectAgent                           -> β_A      (Agent vs Building at Acontextual)
+
+# b_CongruencyCongruent                   -> β_C      (Congruent vs Acontextual among Buildings)
+# b_CongruencyIncongruent                 -> β_I      (Incongruent vs Acontextual among Buildings)
+# b_ObjectAgent:CongruencyCongruent       -> β_AC     (additional Congruent effect for Agents)
+# b_ObjectAgent:CongruencyIncongruent     -> β_AI     (additional Incongruent effect for Agents)
+
+fixef(bayes_model_Gamma, probs = c(0.025, 0.975)  # ~95% HDIs
+posterior_summary(bayes_model_Gamma, pars = "shape") # κ (Gamma shape)
+pp_check(bayes_model_Gamma)  # graphical predictive check (better than QQ for Gamma)
+
+```
+
+
+
+
+
+
+
