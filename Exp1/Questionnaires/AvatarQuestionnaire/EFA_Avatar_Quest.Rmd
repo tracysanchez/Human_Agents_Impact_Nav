@@ -1,0 +1,146 @@
+---
+title: "Avatar Questionnaire Exploratory factor analysis"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Avatar Questionnaire exploratory factor analysis 
+```{r}
+library(readr)
+library(psych)
+#Read data
+AvatarQuest <- read.csv("/Users/tracysanchezpacheco/Documents/Resources/AvatarQuestWide.csv", sep =",")
+head(AvatarQuest)
+```
+
+
+```{r}
+x=1:56
+ID<- as.list('ID')
+Atractive <-as.list(sprintf("Atractive %d", x))
+Realistic <-as.list(sprintf("Realistic %d", x))
+Remember <-as.list(sprintf("Remember %d", x))
+append <- append(ID, Atractive)  
+append <- append(append, Realistic)  
+Colnames <- append(append, Remember)
+colnames(AvatarQuest) <- Colnames
+head(AvatarQuest)
+AvatarQuest
+write.csv(AvatarQuest, '/Users/tracysanchezpacheco/Documents/Resources/AvatarQuestcsv.csv')
+```
+
+# Search for evidence of number of factors 
+```{r }
+library(nlme)
+corObject=cor(AvatarQuest, method = 'pearson', use="pairwise.complete.obs")
+```
+```{r}
+# mat : is a matrix of data
+# ... : further arguments to pass to the native R cor.test function
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(AvatarQuest)
+head(p.mat[, 1:5])
+```
+
+
+
+
+
+```{r }
+library(corrplot)
+corrplot(corObject, type="lower", method="color", tl.col="black", tl.srt=45)
+
+```
+
+```{python}
+import seaborn as sns
+from matplotlib import cm
+sns.set(rc={"figure.figsize":(18, 8)})
+sns.set(font_scale = 1.3)
+
+
+fig, ax = plt.subplots(1,2)
+
+cor, pval = stats.spearmanr(corObject.T)
+sns.heatmap(cor, annot=True, cmap="YlGnBu", mask=mask, ax=ax[0]).set(title="Spearman's rank correlation coefficients(ρ)")
+initial_cmap = cm.get_cmap('YlGnBu')
+reversed_cmap=initial_cmap.reversed()
+sns.heatmap(pval, annot=True, cmap=reversed_cmap, mask=mask, ax=ax[1]).set(title="Probability values for Spearman's rank correlation")
+
+plt.tight_layout()
+plt.show()
+```
+
+
+```{r}
+library(dplyr)
+corr_simple <- function(data=df,sig=0.5){
+  #convert data to numeric in order to run correlations
+  #convert to factor first to keep the integrity of the data - each value will become a number rather than turn into NA
+ # df_cor <- data %>% mutate_if(is.character, as.factor)
+  #df_cor <- df_cor %>% mutate_if(is.factor, as.numeric)
+  #run a correlation and drop the insignificant ones
+  corr <- cor(data)
+  #prepare to drop duplicates and correlations of 1     
+  corr[lower.tri(corr,diag=TRUE)] <- NA 
+  #drop perfect correlations
+  corr[corr == 1] <- NA 
+  #turn into a 3-column table
+  corr <- as.data.frame(as.table(corr))
+  #remove the NA values from above 
+  corr <- na.omit(corr) 
+  #select significant values  
+  corr <- subset(corr, abs(Freq) > sig) 
+  #sort by highest correlation
+  corr <- corr[order(-abs(corr$Freq)),] 
+  #print table
+  print(corr)
+  #turn corr back into matrix in order to plot with corrplot
+  mtx_corr <- reshape2::acast(corr, Var1~Var2, value.var="Freq")
+  
+  #plot correlations visually
+  corrplot(mtx_corr, is.corr=FALSE, tl.col="black", na.label=" ")
+}
+```
+
+
+```{r}
+completerecords <- na.omit(AvatarQuest) 
+corr_simple(completerecords, o.1)
+```
+
+# Exploratory Factor Analysis
+```{r }
+EFA_model = fa(AvatarQuest, nfactors=3)
+# Scree plot
+fa.diagram(EFA_model)
+```
+
+```{r }
+EFA_model$loadings
+```
+
+

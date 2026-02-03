@@ -1,0 +1,218 @@
+---
+title: "Pointing to agent v.s Pointing to building"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    toc_depth: 6
+    mathjax: null
+    css: doc.css # To set style to maximum in a separate file
+---
+
+```{r setup, include=FALSE}
+# Set global chunk options for R Markdown output
+knitr::opts_chunk$set(comment = NA)  # Removes all hashtags from output in HTML 
+
+# Load required packages
+library_packages <- c(
+  "readr", "dlookr", "dplyr", "lme4", "car", "emmeans", "MASS", "jtools", 
+  "lmerTest", "gmodels", "nlme", "multcompView", "ggplot2", "sjPlot", "sjstats"
+)
+lapply(library_packages, library, character.only = TRUE)
+
+# Set options for emmeans
+#emm_options(lmerTest.limit = 10000)
+#emm_options(pbkrtest.limit = 10000)
+
+# Not scientific notation
+options(scipen=999)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+Concat_experiment2 <- read.csv("/Volumes/TwoTeras/3_Merged_Experiments/ConcatSecondExperiment.csv", sep =",")
+head(Concat_experiment2)
+```
+```{r}
+# Recoding variables
+library(dplyr)
+
+Concat_experiment2 <- Concat_experiment2 %>%
+  mutate(
+    ContextEffect = if_else(Context == "False", -0.5,
+                             if_else(Context == "True", 0.5, NaN)),
+    AgentPresence = if_else(AvatarPresenceCategory == "Omitted", -0.5,
+                            if_else(AvatarPresenceCategory == "Present", 0.5, NaN)),
+    Agent_Action_level = if_else(Agent_Category == "Passive", -0.5,
+                                 if_else(Agent_Category == "Active", 0.5, NaN)),
+    Task = if_else(Task == "Agent", -0.5,
+                                 if_else(Task == "Building", 0.5, NaN)),
+    ContextEffectf = factor(ContextEffect, levels = c(-0.5, 0.5), labels = c('Residential', 'Public')),
+    AgentPresencef = factor(AgentPresence, levels = c(-0.5, 0.5), labels = c('Omitted', 'Displayed')),
+    Agent_Action_levelf = factor(Agent_Action_level, levels = c(-0.5, 0.5), labels = c('Passive', 'Active'))
+  )
+Match = -0.5
+```
+
+```{r}
+# Prepare the data: filter complete cases and round the AbsolutError variable
+df <- Concat_experiment2 %>% 
+  filter(complete.cases(.)) %>%
+  mutate(AbsolutErrorR = round(AbsolutError, digits = 3))
+```
+
+
+```{r warning = FALSE }
+# Filter out NA values and round Absolute Error
+df_Concat_experiment2 <- Concat_experiment2 %>%
+  filter(complete.cases(.)) %>%
+  mutate(AbsolutErrorR = round(AbsolutError, digits = 3))
+
+# Plot quantile-quantile plots
+qqp(df_Concat_experiment2$AbsolutErrorR, "norm")
+qqp(df_Concat_experiment2$AbsolutErrorR, "lnorm")
+
+
+```
+```{r}
+target_ids <- c("365", "1754", "2258", "2693", "3310", "4176", "4597", "4796", "4917", "5238", 
+  "5741", "6642", "7093", "7412", "7842", "8007", "8469", "8673", "8695", "9472", 
+  "9502", "9586", "9601", "1031", "1268", "1574", "1843", "4580", "4598", "4847", 
+  "4875", "5161", "5189", "5743", "5766", "5851", "5972", "6406", "7081", "7823", 
+  "7935", "8629", "9297", "9627", "1005", "1008", "1010", "1011", "1013", "1017", 
+  "1018", "1019", "1021", "1022", "1023", "1054", "1055", "1056", "1057", "1058", 
+  "1068", "1069", "1072", "1073", "1074", "1075", "1077", "1079", "1080")
+
+filtered_data <- df_Concat_experiment2[df_Concat_experiment2$SubjectID %in% target_ids,]
+
+unique_ids_df <- unique(df_Concat_experiment2$SubjectID)
+unique_ids_filtered_df <- unique(filtered_data$SubjectID)
+
+# Finding IDs in df but not in filtered_df
+diff_ids = setdiff(unique_ids_df, unique_ids_filtered_df)
+print(diff_ids)
+cat("Number of unique IDs in df not in filtered_df:", length(diff_ids), "\n")
+cat("Number of unique IDs in df:", length(unique_ids_df), "\n")
+unique_ids_df
+```
+
+
+
+```{r}
+
+filtered_data
+# Assessing the need for a multilevel model
+interceptOnly <- gls(AbsolutErrorR ~ 1, data = df_Concat_experiment2, method = "ML")
+IDrandomIntercept <- lmer(AbsolutErrorR ~ 1 + (1 | SubjectID), data = filtered_data)
+PointingLocations <- lmer(AbsolutErrorR ~ 1 + (1 | StartPointID) + (1 | SubjectID), data = filtered_data)
+
+# Compare models
+anova(IDrandomIntercept, PointingLocations)
+```
+```{r}
+library(effectsize)
+
+# Model with Task as a predictor
+contrastM <- update(PointingLocations, . ~ . + Task)
+
+# Summary of the model
+summary(contrastM)
+
+# ANOVA test (Type III sum of squares)
+anova_results_task <- Anova(contrastM, type = "III")
+
+# Compute eta squared (η²)
+eta_sq_task <- eta_squared(contrastM, partial = TRUE)
+
+# Print results
+print(anova_results_task)
+print(eta_sq_task)
+
+# Estimated marginal means and pairwise comparisons
+emmeans(contrastM, pairwise ~ Task)
+```
+
+
+## Pointing to Agent
+
+```{r}
+# Filter out rows with any missing values
+library(dplyr)
+Agent <- filtered_data %>% filter(Task == -0.5)
+```
+
+```{r}
+# Prepare the data: filter complete cases and round the AbsolutError variable
+df <- Agent %>% 
+  filter(complete.cases(.)) %>%
+  mutate(AbsolutErrorR = round(AbsolutError, digits = 3))
+
+# Compare AbsolutErrorR to a normal distribution
+qqp(df$AbsolutErrorR, "norm")
+
+# Compare AbsolutErrorR to a log-normal distribution
+qqp(df$AbsolutErrorR, "lnorm")
+```
+
+```{r}
+# Model with only intercept
+interceptOnly <- gls(AbsolutError ~ 1, data = df, method = "ML")
+
+# Add ID as random intercept
+IDrandomInterceptOnly <- lmer(AbsolutError ~ 1 + (1|SubjectID), data = df)
+
+# Add both ID and Starting Position as random intercepts
+StartlocationsrandomIntercept <- lmer(AbsolutError ~ 1 + (1|SubjectID) + (1|PointingTaskStartingLocations), data = df)
+anova( IDrandomInterceptOnly, StartlocationsrandomIntercept)
+cat("Including Id and starting position as random effects significantly improves the fit of the model\n")
+unique(df$Task)
+```
+
+```{r}
+# Complete model with all predictors
+
+
+Behahvi_model <- update(StartlocationsrandomIntercept, 
+                            . ~ . + ContextEffect*Agent_Action_level)
+
+
+Complete_model <- update(StartlocationsrandomIntercept, 
+                        . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze + ContextEffect*Agent_Action_level)
+
+
+
+# Model without the 'Matchf' variable
+Complete_model_NOMATCH <- update(StartlocationsrandomIntercept, 
+                                . ~ . + Dwelling_Time_Building_Gaze + Dwelling_Time_Agent_Gaze + ContextEffect*Agent_Action_level + AgentPresence)
+
+# Partial model
+
+Partial <- update(StartlocationsrandomIntercept, 
+                                . ~ . + ContextEffect*Agent_Action_level)
+
+
+summary(Behahvi_model)
+
+# Display summary of the complete model
+summary(Complete_model)
+
+# Anova test for the complete model
+Anova(Complete_model)
+
+```
+```{r}
+emmeans(Behahvi_model, pairwise ~ ContextEffect)
+emmeans(Behahvi_model, pairwise ~ Agent_Action_level)
+```
+
+
+

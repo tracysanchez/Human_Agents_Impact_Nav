@@ -1,0 +1,260 @@
+---
+title: "General mixed linear models"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    toc_depth: 6
+    mathjax: null
+    css: doc.css # To set style to maximum in a separate file
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment = NA) # To delete all hashtags from output in HTML 
+library(readr);library(dlookr);library(dplyr);
+library(lme4);library(car);library(emmeans);library(MASS);library(jtools);
+library(lmerTest);library(gmodels);library(nlme); library(multcompView);
+library(ggplot2)
+#emm_options(lmerTest.limit = 10000)
+#emm_options(pbkrtest.limit = 10000)
+```
+
+# Loading Data 
+
+```{r echo = FALSE,warning = FALSE }
+
+Grouped_gazes <- read.csv("/Volumes/SSD/00_Data_Processing/Pre_processed/summary_name_stats_fix_length_NS_Agent.csv", sep =",")
+Long_Gazes <- read.csv("/Volumes/SSD/00_Data_Processing/Pre_processed/data_frame_gaze_no_out_ONLY_TEST.csv")
+head(Grouped_gazes)
+```
+```{r}
+Long_Gazes_agents <- Long_Gazes[ which(Long_Gazes$ Hit_Object_Category=='Agent'), ]
+Grouped_gazes_agents <- Grouped_gazes[ which(Grouped_gazes$Hit_Object_Category=='Agent'),]
+```
+
+
+```{r}
+library(dplyr)
+Gaze_Cat_Sess <- Grouped_gazes %>% 
+  group_by(Collider_CategoricalN, Session)%>%
+  summarise(Gaze_Cat = mean(count, na.rm = TRUE),
+            n=n(),
+            Gaze_CatStandardDev = sd(count, na.rm = TRUE),
+            Gaze_Len = mean(mean, na.rm = TRUE),
+            Gaze_LenStandardDev = sd(mean, na.rm = TRUE),
+            )
+library(tidyr)
+Gaze_Cat_SessUnite <- Gaze_Cat_Sess %>%
+  unite("Grouped_gazes", Collider_CategoricalN:Session, sep= " ", remove = F)
+  
+Gaze_Cat_SessUnitee <-  Gaze_Cat_SessUnite %>%
+  mutate(  Gaze_CatStandardError=Gaze_CatStandardDev/sqrt(n)) %>%  
+  mutate( Gaze_CatStandardIC=Gaze_CatStandardDev * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate( Gaze_LenError=Gaze_LenStandardDev/sqrt(n)) %>%
+  mutate( Gaze_LenStandardError=Gaze_Len/sqrt(n))
+
+c
+
+```
+
+ aes(x     = ContextEffectf,
+           y     = RTMean,
+           group = AgentPresencef))
+           geom_point(aes(shape=AgentPresencef, linetype =AgentPresencef), position=position_dodge(0.3)) +
+```{r}
+Gaze_Cat_SessUnitee$Session <- factor(Gaze_Cat_SessUnitee$Session)
+ggplot(data=subset(Gaze_Cat_SessUnitee, !is.na(Gaze_Cat)),
+       aes(x     = Collider_CategoricalN,
+           y     = Gaze_Cat,
+           group = Session)) +
+
+    geom_point(aes(shape=Session, linetype =Session), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=Session,
+                      ymin= Gaze_Cat-Gaze_CatStandardError, 
+                      ymax=Gaze_Cat+Gaze_CatStandardError),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0),
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+
+    ylab("Gaze count") +
+    xlab("Location") +
+    ggtitle ("Average gaze events per category") +
+
+                 labs(caption  = paste0( 
+                                   "Error bars indicate one Standard Error \n"),
+                            hjust=0.5) 
+```
+ 
+
+```{r echo=FALSE}
+ggplot(data=Gaze_Cat_SessUnitee,
+       aes(x     = Collider_CategoricalN,
+           y     = Gaze_Cat,
+           group = Session)) +
+
+    geom_point(aes(shape=Session, linetype =Session), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=Session,
+                      ymin= Gaze_Cat-Gaze_CatStandardError, 
+                      ymax=Gaze_Cat+Gaze_CatStandardError),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Absolute angular error in degrees") +
+    xlab("Location") +
+    ggtitle ("Accuracy performance",
+
+             subtitle = "The effect of location  and presence") +
+
+                 labs(caption  = paste0( 
+                                   "Error bars indicate one Standard Error \n"),
+                            hjust=0.5) 
+
+```
+
+
+```{r}
+n_distinct(TwoFactorTableUnite$ID)
+```
+
+
+
+
+
+## Checking for the distribution of Absolut error
+```{r warning = FALSE }
+df = HumanAf[complete.cases(HumanAf),]
+df$AbsolutErrorR <- round(df$AbsolutError, digits = 3)
+qqp(df$AbsolutErrorR, "norm")
+```
+
+
+```{r warning = FALSE }
+n_distinct(df$ID)
+
+```
+
+
+# Linear mixed models
+
+## Assessing the need for a multilevel model
+
+```{r}
+interceptOnly <-gls(count ~ 1, data = Grouped_gazes, 
+                    method = "ML")
+IDrandomInterceptOnly <-lme(count ~ 1, data = Grouped_gazes,  
+                            random =~1|SubjectID,
+                            method = "ML")
+Sessions <-update(IDrandomInterceptOnly, .~. + Session)
+Active_Session <-update(Sessions, .~. + Agent_Category)
+TwofactorInteraction <-update(Active_Session, .~. + Session*Agent_Category)
+summary(TwofactorInteraction)
+Anova(TwofactorInteraction)
+```
+```{r}
+interceptOnlym <-gls(median ~ 1, data = Grouped_gazes, 
+                    method = "ML")
+IDrandomInterceptOnlym <-lme(median ~ 1, data = Grouped_gazes,  
+                            random =~1|SubjectID,
+                            method = "ML")
+Sessions <-update(IDrandomInterceptOnlym, .~. + Session)
+Active_Session <-update(Sessions, .~. + Agent_Category)
+TwofactorInteraction <-update(Active_Session, .~. + Session*Agent_Category)
+summary(TwofactorInteraction)
+Anova(TwofactorInteraction)
+```
+```{r}
+interceptOnlym <-gls(max ~ 1, data = Grouped_gazes, 
+                    method = "ML")
+IDrandomInterceptOnlymax <-lme(max ~ 1, data = Grouped_gazes,  
+                            random =~1|SubjectID,
+                            method = "ML")
+Sessions <-update(IDrandomInterceptOnlymax, .~. + Session)
+Active_Session <-update(Sessions, .~. + Agent_Category)
+TwofactorInteraction <-update(Active_Session, .~. + Session*Agent_Category)
+summary(TwofactorInteraction)
+anova(TwofactorInteraction)
+
+library(effectsize)
+options(es.use_symbols = TRUE) # get nice symbols when printing! (On Windows, requires R >= 4.2.0)
+eta_squared(TwofactorInteraction)
+```
+
+## Absolut Error Models
+
+I am adding one main factor at a time 
+```{r}
+MeaningfulContext <-update(StartlocationsrandomIntercept, .~. + ContextEffectf)
+summary(MeaningfulContext)
+Anova(MeaningfulContext)
+```
+```{r}
+Presence <-update(MeaningfulContext, .~. + AgentPresencef)
+summary(Presence)
+Anova(Presence)
+```
+
+```{r}
+TwofactorInteraction <-update(Presence, .~. + ContextEffectf*AgentPresencef)
+summary(TwofactorInteraction)
+Anova(TwofactorInteraction)
+Pairwise<- emmeans(TwofactorInteraction, pairwise ~ ContextEffectf*AgentPresencef)
+Pairwise
+plot(Pairwise[[2]], CIs = TRUE)
+```
+```{r}
+library(multcomp);library(multcompView)
+CLD <- cld(Pairwise,
+          alpha=0.05,
+          Letters=letters,
+          adjust="sidak")
+ggplot(CLD,
+       aes(x     = ContextEffectf,
+           y     = emmean,
+           group = AgentPresencef,
+           colours = .group)) +
+
+    geom_point(aes(shape=AgentPresencef, linetype =AgentPresencef), position=position_dodge(0.3)) +
+
+    geom_errorbar(aes(linetype=AgentPresencef,
+                      ymin  =  lower.CL,
+                      ymax  =  upper.CL),
+                      position=position_dodge(0.3),
+                      width =  0.2,
+                      size  =  0.7) +
+
+    theme_bw() +
+    theme(axis.title   = element_text(face = "bold"),
+          axis.text    = element_text(face = "bold"),
+          plot.caption = element_text(hjust = 0)) +
+
+    ylab("Estimated marginal mean\ Absolute angular error") +
+    xlab("Location location") +
+    ggtitle ("Marginal Means",
+
+             subtitle = "location * Presence") +
+
+                 labs(caption  = paste0( 
+                                   "Boxes indicate the EM mean. \n",
+                                   "Error bars indicate the 95% ",
+                                   "confidence interval of the EM mean. \n"),
+                            hjust=0.5) 
+```
+```

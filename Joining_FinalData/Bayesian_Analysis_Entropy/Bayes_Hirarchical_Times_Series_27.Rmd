@@ -1,0 +1,812 @@
+---
+title: "CausalImpact Analysis on Entropy After Agent Gaze"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Bayesian Analysis of Entropy Over Time
+
+## Introduction
+
+In this analysis, we implement a **Bayesian hierarchical model** to examine how entropy varies after gazing on an Agent. This approach allows us to quantify uncertainty and incorporate prior knowledge, providing a more robust alternative to frequentist methods, particularly for complex hierarchical structures.
+
+We use the **brms** package, which provides an intuitive interface to fit Bayesian models using **Stan**. The model accounts for:
+
+- **Fixed effects**: The experimental **Condition (pre-post gaze)**, which captures differences before and after the gaze.
+- **Time-dependent effects**: A **smooth function of Event_Index**, modeled using splines (`s(Event_Index)`).
+- **Random effects**: Nested participant and session effects (`(1 | Participant/Session)`), which account for variability within subjects.
+
+The dependent variable, **Entropy**, represents the measure of uncertainty or variability in our system, and we assume it follows a **Gaussian distribution**.
+
+---
+
+# **1. Load Required Libraries**
+Before starting the analysis, we load the necessary libraries for data manipulation, visualization, time-series processing, and Bayesian modeling.
+
+```{r load_libraries, message=FALSE, warning=FALSE}
+
+# Load necessary libraries
+library(CausalImpact)  # For causal inference and impact analysis
+library(dplyr)         # Data manipulation
+library(ggplot2)       # Visualization
+library(readr)         # Reading CSV files
+library(lubridate)     # Working with dates and timestamps
+library(zoo)           # Required for time-series data
+library(tidyverse)     # Meta-package (includes dplyr, ggplot2, tidyr, etc.)
+library(tidyr)         # Data tidying functions
+library(brms)          # Bayesian regression modeling via Stan
+library(stringr)       # String manipulation (used for ID extraction)
+
+```
+
+# **2. Load Data
+
+We start by retrieving the entropy results stored in CSV files and merging them into a single dataframe..
+
+
+```{r message=FALSE, warning=FALSE, echo=TRUE}
+# Define directories for each experiment
+exp1_dir <- "/Volumes/TwoTeras/0_Experiment_1/Entropy_Results/Window/entropy_results/CausalImpact/"
+exp2_dir <- "/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/Window/entropy_results/CausalImpact/"
+labels <- read.csv("/Volumes/TwoTeras/Resources/AgentCoordinates_short_exp2.csv")
+
+# List all CSV files in each directory
+exp1_files <- list.files(exp1_dir, pattern = "*.csv", full.names = TRUE)
+exp2_files <- list.files(exp2_dir, pattern = "*.csv", full.names = TRUE)
+
+# Function to extract first two digits from Collider_Name
+extract_first_two_digits <- function(name) {
+  num <- str_extract(name, "^\\d{2}")  # Extract first two digits
+  as.numeric(num)  # Convert to numeric
+}
+
+# Load and process Experiment 1
+exp1_list <- lapply(exp1_files, read_csv)
+Experiment1 <- bind_rows(exp1_list) %>%
+  mutate(Experiment = 1,
+         Collider_Number = extract_first_two_digits(Collider_Name),  # Extract first two digits
+         Building = ifelse(Collider_Number <= 28, "Public", "Residential"),  # Assign 'Building'
+         Building_Effect = ifelse(Building == "Public", 0.5, -0.5))  # Apply effect coding
+
+# Ensure Collider_Number exists before removing it
+if ("Collider_Number" %in% colnames(Experiment1)) {
+  Experiment1 <- Experiment1 %>% dplyr::select(-Collider_Number)
+}
+
+# Load and process Experiment 2
+exp2_list <- lapply(exp2_files, read_csv)
+Experiment2 <- bind_rows(exp2_list) %>%
+  mutate(Experiment = 2,
+         Collider_Number = extract_first_two_digits(Collider_Name)) %>%
+  left_join(labels, by = c("Collider_Name" = "AvatarName")) %>%  # Match agent names
+  mutate(Building = ifelse(Context == TRUE, "Public", "Residential"),
+         Building_Effect = ifelse(Building == "Public", 0.5, -0.5)) %>%  # Apply effect coding
+  dplyr::select(all_of(names(Experiment1)))  # Ensure same columns as Experiment1
+
+# Combine both experiments
+df_combined <- bind_rows(Experiment1, Experiment2)
+
+# Check final dataset structure
+glimpse(df_combined)
+
+# View first rows to confirm changes
+head(df_combined)
+```
+# 3. Data Transformation
+
+
+```{r message=FALSE, warning=FALSE, echo=TRUE}
+
+# Combine both experiments
+df_combined <- bind_rows(Experiment1, Experiment2)
+# Split Participant_ID into ID and Session
+df_combined <- df_combined %>%
+  mutate(
+    ID = str_extract(Participant_ID, "^[^_]+"),  # Extract part before '_'
+    Session = str_extract(Participant_ID, "(?<=_).*")  # Extract part after '_'
+  )
+
+# Create Agent_Type and initial Agent_Effect based on Collider_Name
+df_combined <- df_combined %>%
+  mutate(
+    Agent_Type = ifelse(str_detect(Collider_Name, "Cma"), "Active", "Passive"),
+    Agent_Effect = ifelse(Agent_Type == "Active", 0.5, -0.5)  # Initial effect coding
+  )
+
+
+# Continue with additional effect coding and Event_Index creation
+df_combined <- df_combined %>%
+  mutate(
+    # Define Match (Congruency) using the original rule
+    Match = ifelse((Experiment == 1 & Agent_Effect == 0.5), 0.5, -0.5),
+
+    # Effect coding for Experiment
+    Experiment = case_when(
+      Experiment == 1 ~ -0.5,
+      Experiment == 2 ~ 0.5,
+      TRUE ~ NaN
+    )
+  ) %>%
+  arrange(ID, Session, Gaze_Time) %>%  # Chronological order
+  group_by(ID, Session) %>%
+  mutate(Event_Index = row_number()) %>%
+  ungroup()
+
+# Convert new variables to factors and explicitly define Agent_Type levels (Acontextual, Congruent, Incongruent)
+df_combined <- df_combined %>%
+  mutate(
+    ID = as.factor(ID),
+    Session = as.factor(Session),
+    Agent_Type = factor(case_when(
+      Agent_Effect == -0.5 ~ "Acontextual",
+      Agent_Effect == 0.5 & Experiment == -0.5 ~ "Congruent",
+      Agent_Effect == 0.5 & Experiment == 0.5 ~ "Incongruent",
+      TRUE ~ NA_character_
+    ), levels = c("Acontextual", "Congruent", "Incongruent"))
+  )
+# Display first few rows to verify changes
+head(df_combined)
+
+```
+
+
+```{r}
+# Create two subsets
+df_above_60 <- df_combined %>% filter(Event_Index > 60)
+df_below_60 <- df_combined %>% filter(Event_Index <= 60)
+
+# Total number of rows
+total_rows <- nrow(df_combined)
+
+# Number of rows in each category
+above_60 <- nrow(df_above_60)
+below_60 <- nrow(df_below_60)
+
+# Calculate percentages
+above_60_pct <- (above_60 / total_rows) * 100
+below_60_pct <- (below_60 / total_rows) * 100
+
+# Print results
+cat("Percentage of Event_Index > 60:", round(above_60_pct, 2), "%\n")
+cat("Percentage of Event_Index ≤ 60:", round(below_60_pct, 2), "%\n")
+
+# Check dimensions of the kept dataframes
+dim(df_above_60)  # Shows dimensions of rows and columns
+dim(df_below_60)  # Shows dimensions of rows and columns
+```
+
+# 4. Reshape Data for Bayesian Analysis
+
+```{r message=FALSE, warning=FALSE, echo=TRUE}
+# --- Prep (as you already have) ---
+df_long <- df_below_60 %>%
+  tidyr::pivot_longer(
+    cols = c(Pre_Entropy, Post_Entropy),
+    names_to = "Pre_Post",
+    values_to = "Entropy"
+  ) %>%
+  mutate(
+    Pre_Post = factor(Pre_Post, levels = c("Pre_Entropy","Post_Entropy")),
+    Pre_Post_num = ifelse(Pre_Post == "Pre_Entropy", 0, 1),
+    ID = factor(ID),
+    Session = factor(Session)
+  )
+
+df_long$Entropy[df_long$Entropy > 1] <- 1
+
+# Smithson–Verkuilen map to (0,1)
+n_eff <- sum(!is.na(df_long$Entropy))
+df_long <- df_long %>%
+  mutate(
+    Entropy_raw = Entropy,
+    Entropy = pmin(pmax(Entropy, 0), 1),
+    Entropy = (Entropy * (n_eff - 1) + 0.5) / n_eff,
+    Event_Index_s = as.numeric(scale(Event_Index))
+  )
+
+```
+
+```{r}
+# --- Priors (weakly-informative; consistent with your write-up) ---
+priors <- c(
+  set_prior("normal(0, 1)",          class = "b"),          # population-level (includes Intercept)
+  set_prior("student_t(3, 0, 2.5)",  class = "sd"),         # group-level SDs
+  set_prior("student_t(3, 0, 0.8)",  class = "sds"),        # smooth-term SDs
+  set_prior("gamma(0.01, 0.01)",     class = "phi")         # Beta precision (identity)
+)
+
+# replace Pre_Post_num by centered P_c in the formula—interpretation unchanged after back-transform
+df_long <- df_long %>% mutate(P_c = Pre_Post_num - 0.5)
+
+
+# --- Fit: Beta(logit) with nested RE and spline ---
+bayesian_time_model <- brm(
+  Entropy ~ Pre_Post_num + s(Event_Index_s, k = 5) + (1 | ID) + (1 | ID:Session),
+  data   = df_long,
+  family = Beta(link = "logit"),
+  prior  = priors,
+  chains = 4, iter = 6000, warmup = 2000, cores = 4,
+  control = list(adapt_delta = 0.995, max_treedepth = 15),
+  init    = 0,
+  save_pars = save_pars(all = TRUE)
+)
+
+```
+
+
+```{r}
+library(brms)
+library(bridgesampling)
+
+# FULL model you've already fit:
+m1 <- bayesian_time_model   # Entropy ~ Pre_Post_num + s(Event_Index_s,k=5) + (1|ID) + (1|ID:Session)
+stopifnot(inherits(m1, "brmsfit"))
+
+# Refit the NULL model on the *same data*, same spline + REs, just drop Pre_Post_num
+m0 <- brm(
+  Entropy ~ s(Event_Index_s, k = 5) + (1 | ID) + (1 | ID:Session),
+  data   = m1$data,                       # <-- ensures identical rows/cols
+  family = Beta(link = "logit"),
+  prior  = priors, # reuse priors from m1
+  chains = 4, iter = 6000, warmup = 2000, cores = parallel::detectCores(),
+  control = list(adapt_delta = 0.995, max_treedepth = 15),
+  save_pars = save_pars(all = TRUE)
+)
+
+# Bridge sampling (warp3 is robust)
+b1 <- bridge_sampler(m1, method = "warp3", silent = TRUE)
+b0 <- bridge_sampler(m0, method = "warp3", silent = TRUE)
+
+bf_obj <- bf(b1, b0)
+BF10   <- bf_obj$bf
+log10BF <- (log(BF10) / log(10))
+
+BF10
+log10BF
+
+```
+
+
+```{r}
+# --- 0) Harmonize levels & columns -------------------------------------------
+
+df_post <- subset(df_long, Pre_Post == "Post_Entropy")
+
+# 0) Quick NA audit
+colSums(is.na(df_post[, c("Entropy","Agent_Type","ID","Session")]))
+
+# --- 1) Ensure factor levels are ordered consistently ---
+df_post <- subset(df_long, Pre_Post == "Post_Entropy") %>%
+  mutate(
+    Agent_Type = factor(Agent_Type,
+                        levels = c("Acontextual","Congruent","Incongruent"))
+  )
+
+# --- 2) Set effect coding (sum contrasts) ---
+contrasts(df_post$Agent_Type) <- contr.sum(3)
+# Check
+contrasts(df_post$Agent_Type)
+# Should show:
+#              [,1] [,2]
+# Acontextual     1    0
+# Congruent       0    1
+# Incongruent    -1   -1
+# (or a similar rotated version; the important part is sum-to-zero)
+
+# --- 3) Drop NAs just in case ---
+df_post_mod <- df_post %>%
+  dplyr::select(Entropy, Agent_Type, ID, Session) %>%
+  tidyr::drop_na()
+
+# --- 4) Priors (no sds, no re-mapping of Entropy) ---
+pri <- c(
+  prior(normal(0, 1), class = "b"),
+  prior(normal(0, 1), class = "Intercept"),
+  prior(student_t(3, 0, 2.5), class = "sd")
+)
+
+# --- 5) Fit with effect coding ---
+fit_ec <- brm(
+  Entropy ~ Agent_Type + (1 | ID) + (1 | ID:Session),
+  data = df_post_mod,
+  family = Beta(link = "logit"),
+  prior  = pri,
+  control = list(adapt_delta = 0.99, max_treedepth = 15),
+  iter = 6000, warmup = 3000, chains = 4, cores = 4, seed = 123
+)
+
+# --- 6) Check results ---
+summary(fit_ec)
+default_prior(fit_ec)
+
+# --- 7) Back-transformed means & contrasts (always safest) ---
+library(emmeans)
+em <- emmeans(fit_ec, ~ Agent_Type, re_formula = NA, epred = TRUE)
+summary(em)
+pairs(em)
+
+```
+```{r}
+contrast(em, method = "eff", epred = TRUE)
+```
+
+```{r}
+# --- Same centering/scaling you used for the spline ---
+ev_center <- mean(df_long$Event_Index, na.rm = TRUE)
+ev_scale  <- sd(df_long$Event_Index,  na.rm = TRUE)
+scale_ev  <- function(x) (x - ev_center) / ev_scale
+
+# --- Build new_data with the *right* column names ---
+new_data <- tidyr::crossing(
+  Event_Index   = seq(min(df_long$Event_Index, na.rm = TRUE),
+                      max(df_long$Event_Index, na.rm = TRUE),
+                      length.out = 200),
+  Pre_Post_num  = c(0, 1)   # must match the model term name
+)
+
+# Add standardized index expected by the model
+new_data <- new_data %>%
+  mutate(Event_Index_s = scale_ev(Event_Index))
+
+# --- Predictions on the response scale (mu), population-level only ---
+preds <- fitted(
+  bayesian_time_model,
+  newdata          = new_data,
+  re_formula       = NA,           # drop random effects
+  allow_new_levels = TRUE,
+  probs            = c(0.025, 0.975)
+)
+
+# Bind predictions and (optionally) label pre/post
+new_data_pred <- new_data %>%
+  mutate(
+    PrePost = ifelse(Pre_Post_num == 0, "Pre", "Post")
+  ) %>%
+  bind_cols(as.data.frame(preds))   # columns: Estimate, Q2.5, Q97.5
+
+```
+
+```{r}
+new_data_binned <- new_data_pred %>%
+  mutate(Event_Bin = factor(dplyr::case_when(
+    Event_Index >= 0  & Event_Index < 3   ~ "0–3",
+    Event_Index >= 3  & Event_Index < 10  ~ "3–10",
+    Event_Index >= 10 & Event_Index < 20  ~ "10–20",
+    Event_Index >= 20                     ~ ">20"
+  ), levels = c("0–3","3–10","10–20",">20")))
+
+ggplot(new_data_binned,
+       aes(x = Event_Index, y = Estimate, ymin = Q2.5, ymax = Q97.5,
+           color = PrePost, fill = PrePost)) +
+  geom_ribbon(alpha = 0.2, color = NA) +
+  geom_line(size = 0.8) +
+  facet_wrap(~ Event_Bin, scales = "free_x") +
+  labs(x = "Event index", y = "Predicted entropy (mu)", color = "", fill = "") +
+  theme_classic()
+
+```
+```{r}
+
+# Save the dataset as a CSV file
+write.csv(new_data, "/Volumes/TwoTeras/Resources/new_data_new.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+
+# 1) Make the numeric score
+df_post <- df_post %>%
+  mutate(
+    Agent_CI = case_when(
+      Agent_Type == "Congruent"   ~ -0.5,
+      Agent_Type == "Acontextual" ~  0.0,
+      Agent_Type == "Incongruent" ~  0.5,
+      TRUE ~ NA_real_
+    )
+  )
+
+# 2) Fit Beta(logit) with only one contrast and (1|ID)
+#    (Defaults for Beta models are fine; add mild priors if you want.)
+# Weakly-informative priors to match the Methods text
+priors <- c(
+  set_prior("normal(0, 1)", class = "b"),          # population-level slopes (Agent_CI)
+  set_prior("normal(0, 1)", class = "Intercept"),  # population-level intercept (explicit)
+  set_prior("student_t(3, 0, 2.5)", class = "sd"), # group-level SDs (for ID)
+  set_prior("gamma(0.01, 0.01)", class = "phi")    # Beta precision phi (identity link)
+)
+
+m_CI <- brm(
+  Entropy ~ Agent_CI + (1 | ID) + ,
+  data   = df_post,
+  family = Beta(link = "logit"),
+  prior  = priors,
+  chains = 4, iter = 6000, warmup = 2000, cores = parallel::detectCores(),
+  control = list(adapt_delta = 0.99),
+  save_pars = save_pars(all = TRUE)
+)
+
+summary(m_CI)
+prior_summary(m_CI)  # sanity-check the priors actually used
+
+summary(m_CI)
+
+# 3) Posterior summaries for the contrast and for each condition
+dr <- as_draws_df(m_CI)
+inv_logit <- brms::inv_logit_scaled
+
+a0 <- dr$b_Intercept
+a1 <- dr$b_Agent_CI  # log-odds slope = (Incongruent - Congruent) on logit scale
+
+# Means (probability scale) per condition
+mu_C <- inv_logit(a0 + (-0.5)*a1)  # Congruent
+mu_A <- inv_logit(a0 + 0.0   *a1)  # Acontextual
+mu_I <- inv_logit(a0 + ( 0.5)*a1)  # Incongruent
+
+# Congruent vs Incongruent:
+delta_logit_CI <- (a0 - 0.5*a1) - (a0 + 0.5*a1)   # Congruent - Incongruent = -a1
+# If you prefer Incongruent - Congruent, use +a1
+
+OR_CI <- exp(delta_logit_CI)  # odds ratio (C vs I)
+
+summ89 <- function(x) c(mean = mean(x), l = quantile(x, .055), u = quantile(x, .945))
+
+# Reporters
+cat("Congruent mean (prob), 89% HDI:\n"); print(summ89(mu_C))
+cat("Acontextual mean (prob), 89% HDI:\n"); print(summ89(mu_A))
+cat("Incongruent mean (prob), 89% HDI:\n"); print(summ89(mu_I))
+
+cat("\nC - I (log-odds), 89% HDI:\n"); print(summ89(delta_logit_CI))
+cat("OR (C vs I), 89% HDI:\n"); print(summ89(OR_CI))
+
+# Probability-scale difference (Congruent - Incongruent)
+d_C_minus_I <- mu_C - mu_I
+cat("\nC - I (prob), 89% HDI:\n"); print(summ89(d_C_minus_I))
+
+```
+
+
+
+
+
+
+
+
+`
+```{r}
+library(brms)
+library(posterior)
+library(dplyr)
+library(tidyr)
+
+levs <- c("Acontextual","Congruent","Incongruent")
+nd   <- data.frame(Agent_Type = factor(levs, levels = levs))
+
+# Linear predictor (logit scale)
+eta <- posterior_linpred(bayesian_post_model,
+                         newdata = nd, re_formula = NA, transform = FALSE)
+colnames(eta) <- paste0("eta_", levs)
+
+# Probability scale
+mu  <- posterior_epred(bayesian_post_model,
+                       newdata = nd, re_formula = NA)
+colnames(mu) <- paste0("mu_", levs)
+
+# Build contrasts (logit scale)
+delta_logit_C_vs_A <- eta[, "eta_Congruent"]  - eta[, "eta_Acontextual"]
+delta_logit_I_vs_A <- eta[, "eta_Incongruent"] - eta[, "eta_Acontextual"]
+delta_logit_C_vs_I <- eta[, "eta_Congruent"]  - eta[, "eta_Incongruent"]
+
+# ORs
+OR_C_vs_A <- exp(delta_logit_C_vs_A)
+OR_I_vs_A <- exp(delta_logit_I_vs_A)
+OR_C_vs_I <- exp(delta_logit_C_vs_I)
+
+# Probability-scale differences
+d_CA <- mu[, "mu_Congruent"]   - mu[, "mu_Acontextual"]
+d_IA <- mu[, "mu_Incongruent"] - mu[, "mu_Acontextual"]
+d_CI <- mu[, "mu_Congruent"]   - mu[, "mu_Incongruent"]
+
+# Assemble a tidy draws frame to export
+posterior_contrasts <- tibble(
+  Congruent_vs_Acontextual_logit = delta_logit_C_vs_A,
+  Incongruent_vs_Acontextual_logit = delta_logit_I_vs_A,
+  Congruent_vs_Incongruent_logit = delta_logit_C_vs_I,
+  OR_C_vs_A = OR_C_vs_A,
+  OR_I_vs_A = OR_I_vs_A,
+  OR_C_vs_I = OR_C_vs_I,
+  d_prob_C_minus_A = d_CA,
+  d_prob_I_minus_A = d_IA,
+  d_prob_C_minus_I = d_CI
+)
+
+write.csv(posterior_contrasts,
+          "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/posterior_contrasts_with_intercept.csv",
+          row.names = FALSE)
+
+cat("Saved posterior contrast samples for Python!\n")
+
+```
+
+```{r}
+library(dplyr)
+dr <- posterior::as_draws_df(bayesian_post_model)
+
+# pick names dynamically
+bC_name <- if ("b_Agent_TypeCongruent_vs_Acontextual" %in% names(dr))
+  "b_Agent_TypeCongruent_vs_Acontextual" else "b_Agent_Type2"
+
+bI_name <- if ("b_Agent_TypeIncongruent_vs_Acontextual" %in% names(dr))
+  "b_Agent_TypeIncongruent_vs_Acontextual" else "b_Agent_Type3"
+
+posterior_contrasts <- dr %>%
+  transmute(
+    Congruent_vs_Acontextual   = .data[["b_Intercept"]] + .data[[bC_name]],
+    Incongruent_vs_Acontextual = .data[["b_Intercept"]] + .data[[bI_name]]
+  ) %>%
+  pivot_longer(everything(),
+               names_to = "Contrast",
+               values_to = "Estimate_Logit")
+
+write.csv(posterior_contrasts,
+          "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/posterior_contrasts_with_intercept.csv",
+          row.names = FALSE)
+
+```
+
+
+```{r}
+
+# Load necessary libraries
+library(emmeans)
+library(tidyverse)
+library(brms)
+
+# Extract posterior draws for the model parameters
+posterior_draws <- as_draws_df(bayesian_post_model)
+
+# Extract intercept and contrast parameters
+posterior_contrasts <- posterior_draws %>%
+  select(b_Intercept, b_Agent_TypeCongruent_vs_Acontextual, b_Agent_TypeIncongruent_vs_Acontextual) %>%
+  mutate(
+    Congruent_vs_Acontextual = b_Intercept + b_Agent_TypeCongruent_vs_Acontextual,
+    Incongruent_vs_Acontextual = b_Intercept + b_Agent_TypeIncongruent_vs_Acontextual
+  ) %>%
+  select(Congruent_vs_Acontextual, Incongruent_vs_Acontextual) %>%
+  pivot_longer(cols = everything(), names_to = "Contrast", values_to = "Estimate_Logit")
+
+# Save updated posterior samples for Python
+write.csv(posterior_contrasts, "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/posterior_contrasts_with_intercept.csv", row.names = FALSE)
+
+
+# Print confirmation
+print("Saved posterior contrast samples for Python!")
+
+```
+```{r}
+# Load necessary libraries
+library(emmeans)
+library(tidyverse)
+library(brms)
+
+# Compute estimated marginal means in logit space
+emmeans_results <- emmeans(bayesian_post_model, ~ Agent_Type, type = "link")
+
+# Extract predicted entropy values for Congruent & Incongruent
+predicted_entropy <- as_tibble(emmeans_results) %>%
+  rename(Estimate_Logit = emmean)  # Rename column for clarity
+
+# Save the predicted entropy values for Python processing
+write.csv(predicted_entropy, "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/predicted_entropy_values.csv", row.names = FALSE)
+
+print("Predicted entropy values saved!")
+
+```
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(brms)
+
+# Create new data for predictions (only Congruent & Incongruent)
+new_post_data <- expand.grid(
+  Agent_Type = c("Congruent", "Incongruent"),
+  ID = "new_ID"  # Dummy ID to avoid random effect issues
+)
+
+# Generate posterior predictions
+posterior_predictions <- posterior_epred(bayesian_post_model, newdata = new_post_data, re.form = NA)
+
+# Convert posterior predictions into long format
+predicted_entropy_samples <- as_tibble(posterior_predictions) %>%
+  pivot_longer(cols = everything(), names_to = "Sample", values_to = "Estimate_Logit") %>%
+  mutate(Agent_Type = rep(new_post_data$Agent_Type, each = nrow(posterior_predictions)))
+
+# Save all posterior sampled predicted entropy values
+write.csv(predicted_entropy_samples, "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/predicted_entropy_samples.csv", row.names = FALSE)
+
+print("Posterior predicted entropy values saved!")
+
+
+```
+
+
+```{r}
+# Plot transformed contrasts with credible intervals
+ggplot(contrast_data, aes(x = Contrast, y = Response_Estimate, ymin = Lower_Response_CI, ymax = Upper_Response_CI)) +
+  geom_point(size = 3, color = "blue") +
+  geom_errorbar(width = 0.2) +
+  theme_minimal() +
+  labs(title = "Posterior Contrasts of Agent Type Effects (Response Scale)",
+       x = "Contrast",
+       y = "Estimated Change in Entropy (Response Scale)") +
+  coord_flip()
+
+```
+
+
+
+
+```{r}
+library(brms)
+
+# Bayesian hierarchical model predicting Post_Entropy
+bayesian_post_entropy_model <- brm(
+  Post_Entropy ~ Building_Effect + Agent_Effect + Match + s(Event_Index, k = 5) + (1 | ID/Session),
+  data = df_below_60,
+  family = gaussian(),
+  cores = parallel::detectCores(),
+  chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+
+# Model Summary
+summary(bayesian_post_entropy_model)
+
+```
+
+
+
+```{r}
+# Null Model: No predictors, only random effects
+bayesian_model_null <- brm(
+  Entropy ~ 1 + (1 | ID/Session),
+  data = df_long,
+  family = Beta(link = "logit"),
+  core=4,
+  chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+
+```
+
+```{r}
+library(bridgesampling)
+
+#bridge_full <- bridge_sampler(bayesian_time_model, method = "warp3", repetitions = 50)
+bridge_null <- bridge_sampler(bayesian_model_null, method = "warp3", repetitions = 50)
+
+bayes_factor_full_vs_null <- bayes_factor(bridge_full, bridge_null)
+
+print(bayes_factor_full_vs_null)
+
+
+
+```
+```{r}
+library(dplyr)
+
+# Prepare df_post for modeling Post_Entropy only
+df_post <- df_combined %>%
+  mutate(
+    ID = factor(ID),
+    Session = factor(Session),
+    Condition = factor(Condition, levels = c("Pre", "Post")),
+    Agent_Type = factor(Agent_Type),
+    Building = factor(Building)
+  ) %>%
+  arrange(ID, Session, Event_Index)  # Ensure correct chronological order
+
+# Quick check of your dataframe
+head(df_post)
+```
+
+
+
+```{r}
+library(BayesFactor)
+
+# Full model (all predictors)
+bf_full <- lmBF(Entropy ~ Pre_Post_Effect + Building_Effect + Agent_Effect + Match + Event_Index, 
+                data = df_long_clean, 
+                whichRandom = c("Participant_ID", "Session"))
+
+# Models removing one term at a time
+bf_no_PrePost <- lmBF(Entropy ~ Building_Effect + Agent_Effect + Match + Event_Index, 
+                       data = df_long_clean, 
+                       whichRandom = c("Participant_ID", "Session"))
+
+bf_no_Building <- lmBF(Entropy ~ Pre_Post_Effect + Agent_Effect + Match + Event_Index, 
+                        data = df_long_clean, 
+                        whichRandom = c("Participant_ID", "Session"))
+
+bf_no_Agent <- lmBF(Entropy ~ Pre_Post_Effect + Building_Effect + Match + Event_Index, 
+                     data = df_long_clean, 
+                     whichRandom = c("Participant_ID", "Session"))
+
+bf_no_Match <- lmBF(Entropy ~ Pre_Post_Effect + Building_Effect + Agent_Effect + Event_Index, 
+                     data = df_long_clean, 
+                     whichRandom = c("Participant_ID", "Session"))
+
+bf_no_EventIndex <- lmBF(Entropy ~ Pre_Post_Effect + Building_Effect + Agent_Effect + Match, 
+                          data = df_long_clean, 
+                          whichRandom = c("Participant_ID", "Session"))
+
+# Compute individual Bayes Factors
+bf_PrePost <- bf_full / bf_no_PrePost
+bf_Building <- bf_full / bf_no_Building
+bf_Agent <- bf_full / bf_no_Agent
+bf_Match <- bf_full / bf_no_Match
+bf_EventIndex <- bf_full / bf_no_EventIndex
+
+# Print results
+bf_PrePost
+bf_Building
+bf_Agent
+bf_Match
+bf_EventIndex
+
+```
+```{r}
+library(ggplot2)
+
+# Create a dataframe with predictors and their Bayes Factors
+bf_data <- data.frame(
+  Predictor = c("Pre_Post_Effect", "Building_Effect", "Agent_Effect", "Match", "Event_Index"),
+  BayesFactor = c(1.15e+33, 0.0387, 403.70, 0.0387, 2.01e+10)  # Use your computed BF values
+)
+
+# Apply log transformation (to make the scale readable)
+bf_data$LogBF <- log10(bf_data$BayesFactor)
+
+# Define colors based on importance
+bf_data$Category <- ifelse(bf_data$BayesFactor > 30, "Strong Evidence", 
+                      ifelse(bf_data$BayesFactor > 3, "Moderate Evidence", 
+                      ifelse(bf_data$BayesFactor > 1, "Weak Evidence", "Against Inclusion")))
+
+# Define custom colors
+color_palette <- c("Strong Evidence" = "darkred", "Moderate Evidence" = "orange", 
+                   "Weak Evidence" = "yellow", "Against Inclusion" = "blue")
+
+# ✅ 2. Plot the Bayes Factors
+ggplot(bf_data, aes(x = reorder(Predictor, LogBF), y = LogBF, fill = Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(BayesFactor, 2)), hjust = 1.2, color = "white", size = 4) +
+  scale_fill_manual(values = color_palette) +
+  labs(title = "Bayes Factors for Predictors",
+       subtitle = "Log-transformed Bayes Factors (BF > 1 favors inclusion, BF < 1 favors exclusion)",
+       x = "Predictor",
+       y = "Log10(Bayes Factor)") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes for readability
+
+```
+
+
+
+
+
+

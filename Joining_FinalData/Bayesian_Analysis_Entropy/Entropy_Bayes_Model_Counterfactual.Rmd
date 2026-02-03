@@ -1,0 +1,634 @@
+---
+title: "Eye-Tracking_combinedModels"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    toc_depth: 6
+    mathjax: null
+    css: doc.css # To set style to maximum in a separate file
+---
+
+```{r setup, include=FALSE}
+
+# Helper to load quietly
+suppressPackageStartupMessages({
+  library(tidyverse)    # dplyr, ggplot2, tidyr, readr, purrr, tibble, stringr, forcats
+  library(lubridate)    # Dates/times (not attached by tidyverse core)
+  library(zoo)          # Time-series helpers
+  library(brms)         # Bayesian modeling via Stan
+  library(posterior)    # Posteriors, diagnostics, summaries
+  library(bridgesampling) # Bayes factors via bridge sampling
+  library(mice)         # Missing data imputation
+})
+
+# Optional niceties
+theme_set(ggplot2::theme_minimal(base_size = 12))
+# conflict_prefer("filter", "dplyr") # if using conflicted
+
+```
+
+
+```{r echo = FALSE, warning = FALSE}
+HumanA_Fixations <- read.csv("/Volumes/TwoTeras/2_DataSets_Experiments_1_2/BehavioralData_Fixations_Wide.csv", sep =",")
+head(HumanA_Fixations)
+```
+
+
+```{r}
+unique(HumanA_Fixations$SubjectID)
+```
+```{r}
+Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM_Chao_Shen_Normalized.csv", sep =",")
+# Ensure Entropy is a data frame or tibble
+Entropy <- as.data.frame(Entropy)
+
+# Drop columns X and Experiment using base R
+Entropy <- Entropy[, !(names(Entropy) %in% c("X", "Experiment"))]
+
+# View the updated dataset
+head(Entropy)
+unique(Entropy$Participant_ID)
+```
+
+```{r}
+
+# Rename columns in the Entropy dataset
+Entropy <- Entropy %>%
+  rename(
+    avatar_ID=  Agent_ID,
+    SubjectID= Participant_ID
+  )
+
+Entropy <- Entropy %>%
+  mutate(SubjectID = as.integer(SubjectID))
+
+# Perform concatenation based on avatar_ID and SubjectID
+Merged_Data <- HumanA_Fixations %>%
+  inner_join(Entropy, by = c("avatar_ID", "SubjectID"))
+
+
+
+# View the merged dataset
+head(Merged_Data)
+```
+
+```{r}
+
+Merged_Data <- Merged_Data %>%
+  mutate(
+    # Context factor (Residential / Public) from your "Context" == "False"/"True"
+    ContextEffectf = case_when(
+      Context == "False" ~ "Residential",
+      Context == "True"  ~ "Public",
+      TRUE ~ NA_character_
+    ) |> factor(levels = c("Residential","Public")),
+    
+    # Agent presence (if you still need it)
+    AgentPresencef = case_when(
+      AvatarPresenceCategory == "Omitted"  ~ "Omitted",
+      AvatarPresenceCategory == "Present"  ~ "Displayed",
+      TRUE ~ NA_character_
+    ) |> factor(levels = c("Omitted","Displayed")),
+
+    # Agent action (if you still need it for plots)
+    Agent_Action_levelf = case_when(
+      Agent_Category == "Passive" ~ "Passive",
+      Agent_Category == "Active"  ~ "Active",
+      TRUE ~ NA_character_
+    ) |> factor(levels = c("Passive","Active")),
+
+    # Experiment label (if you still need it)
+    Experimentf = case_when(
+      Experiment == 1 ~ "Experiment 1",
+      Experiment == 2 ~ "Experiment 2",
+      TRUE ~ NA_character_
+    ) |> factor(levels = c("Experiment 1","Experiment 2"))
+  ) %>%
+  # --- Construct Agent_Typef exactly as in your design:
+  # Passive -> Acontextual; Active + Exp1 -> Congruent; Active + Exp2 -> Incongruent
+  mutate(
+    Agent_Typef = case_when(
+      Agent_Action_levelf == "Passive"                           ~ "Acontextual",
+      Agent_Action_levelf == "Active" & Experimentf == "Experiment 1" ~ "Congruent",
+      Agent_Action_levelf == "Active" & Experimentf == "Experiment 2" ~ "Incongruent",
+      TRUE ~ NA_character_
+    ) |> factor(levels = c("Acontextual","Congruent","Incongruent"))
+  )
+
+
+# Continue pipeline with centering dwelling time variables
+Merged_Data <- Merged_Data %>%
+  mutate(
+    Dwelling_Time_Building_Gaze_Centered = Dwelling_Time_Building_Gaze - mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    Dwelling_Time_Agent_Gaze_Centered = Dwelling_Time_Agent_Gaze - mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE)
+  )
+
+# Display first few rows to verify changes
+head(Merged_Data)
+
+```
+
+
+
+
+```{r}
+## Use treatment coding for unordered factors everywhere
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+
+df <- Merged_Data %>% 
+  filter(complete.cases(.))
+
+p <- ggplot(df, aes(x = AbsolutError, fill = Agent_Action_levelf)) +
+  
+  geom_histogram(aes(group = Agent_Action_levelf), 
+                 position = "identity", 
+                 alpha = 0.5, 
+                 binwidth = 10) +
+  
+  facet_grid(cols = vars(ContextEffectf)) +
+  
+  theme_bw()
+
+# Print the plot
+p
+```
+
+```{r}
+colSums(is.na(Merged_Data))
+```
+
+
+```{r}
+imputed_data <- mice(Merged_Data, method = "pmm", m = 5)
+```
+```{r}
+Merged_Data_Imputed <- complete(imputed_data)
+```
+
+```{r}
+Merged_Data <- Merged_Data_Imputed %>%
+  mutate(across(c(Dwelling_Time_Building_Gaze_Centered, Dwelling_Time_Agent_Gaze_Centered, mean), scale))
+
+# (Optional) Standardize mediators used in the outcome model for interpretability
+Merged_Data <- Merged_Data %>%
+  mutate(
+    Dwelling_Time_Building_Gaze_z = as.numeric(scale(Dwelling_Time_Building_Gaze)),
+    Dwelling_Time_Agent_Gaze_z    = as.numeric(scale(Dwelling_Time_Agent_Gaze))
+  )
+
+n_beta <- nrow(Merged_Data)  # or nrow(Merged_Data_for_beta) if you filter first
+Merged_Data$GTE_median_adj <- (Merged_Data$median * (n_beta - 1) + 0.5) / n_beta
+
+
+```
+
+```{r}
+colnames(model.matrix(~ Agent_Typef + ContextEffectf, data = Merged_Data))
+# Expected: "(Intercept)", "Agent_TypefCongruent", "Agent_TypefIncongruent",
+#           "ContextEffectfPublic"
+levels(Merged_Data$Agent_Typef)
+levels(Merged_Data$ContextEffectf)
+
+```
+
+
+```{r}
+# Make sure levels are in your intended order
+Merged_Data <- Merged_Data |>
+  dplyr::mutate(
+    Agent_Typef     = factor(Agent_Typef,     levels = c("Acontextual","Congruent","Incongruent")),
+    ContextEffectf  = factor(ContextEffectf,  levels = c("Residential","Public"))
+  )
+# Confirm mapping: columns correspond to contrasts vs the first level
+colnames(model.matrix(~ Agent_Typef + ContextEffectf, data = Merged_Data))
+levels(Merged_Data$Agent_Typef)
+levels(Merged_Data$ContextEffectf)
+
+
+n <- nrow(df)
+Merged_Data$GTE_median_adj <- (Merged_Data$median * (n - 1) + 0.5) / n
+```
+
+
+
+```{r}
+# ============================================================
+# (A) Setup: levels, context weights, and safety for Beta
+# ============================================================
+
+set.seed(123)
+
+stopifnot(is.factor(Merged_Data$Agent_Typef))
+stopifnot(is.factor(Merged_Data$ContextEffectf))
+
+agent_lvls <- levels(Merged_Data$Agent_Typef)        # c("Acontextual","Congruent","Incongruent")
+ctx_lvls   <- levels(Merged_Data$ContextEffectf)     # c("Residential","Public")
+
+# Empirical marginal distribution of context (used for averaging)
+ctx_w <- prop.table(table(Merged_Data$ContextEffectf)) |> as.numeric()
+names(ctx_w) <- ctx_lvls
+
+# Make grouping vars factors (safe for brms)
+Merged_Data <- Merged_Data %>%
+  mutate(
+    SubjectID = factor(SubjectID),
+    PointingTaskStartingLocations = factor(PointingTaskStartingLocations)
+  )
+
+```
+
+
+```{r}
+# ---- Mediator model (Agent + Context -> GTE) ----
+fit_med <- brm(
+  formula = brms::bf(
+    GTE_median_adj ~ Agent_Typef + ContextEffectf +
+      (1 | SubjectID) + (1 | PointingTaskStartingLocations)
+  ),
+  family = brms::Beta(link = "logit"),
+  data   = Merged_Data,
+  chains = 4, cores = 4, iter = 6000, warmup = 3000,
+  save_pars = save_pars(all = TRUE), seed = 123
+)
+
+fit_out <- brm(
+  formula = brms::bf(
+    AbsolutError ~ Agent_Typef + ContextEffectf + GTE_median_adj +
+      Dwelling_Time_Agent_Gaze_z + Dwelling_Time_Building_Gaze_z +
+      (1 | SubjectID) + (1 | PointingTaskStartingLocations)
+  ),
+  family = Gamma(link = "log"),
+  data   = Merged_Data,
+  chains = 4, cores = 4, iter = 6000, warmup = 3000,
+  save_pars = save_pars(all = TRUE), seed = 123
+)
+
+```
+```{r}
+summary(fit_med)
+summary(fit_out)
+
+```
+```{r}
+# ============================================================
+# Counterfactual mediation with a single mediator (GTE)
+#   Models: fit_med (Beta-logit), fit_out (Gamma-log)
+#   Baseline (control): Agent_Typef = "Acontextual"
+#   Treatments: "Congruent" or "Incongruent"
+#   Context averaged using ctx_w (from your pipeline)
+#   Credible intervals: 95%
+# ============================================================
+
+# Use 95% credible intervals
+probs <- c(0.025, 0.975)
+
+stopifnot(all(c("Acontextual","Congruent","Incongruent") %in% levels(Merged_Data$Agent_Typef)))
+stopifnot(all(c("Residential","Public") %in% levels(Merged_Data$ContextEffectf)))
+
+# Helper: posterior expected GTE for (Agent, Context), population level (no REs)
+pred_mediator <- function(agent, ctx) {
+  newd <- tibble(
+    Agent_Typef = factor(agent, levels = levels(Merged_Data$Agent_Typef)),
+    ContextEffectf = factor(ctx, levels = levels(Merged_Data$ContextEffectf)),
+    SubjectID = NA,  # ignored when re_formula = NA
+    PointingTaskStartingLocations = NA
+  )
+  # Expected value on response scale (in (0,1))
+  brms::posterior_epred(fit_med, newdata = newd, re_formula = NA)[, 1]
+}
+
+# Prepare one vector of mediator draws per (agent, context)
+m_Actx_Res <- pred_mediator("Acontextual", "Residential")
+m_Actx_Pub <- pred_mediator("Acontextual", "Public")
+m_TrtC_Res <- pred_mediator("Congruent",   "Residential")
+m_TrtC_Pub <- pred_mediator("Congruent",   "Public")
+m_TrtI_Res <- pred_mediator("Incongruent", "Residential")
+m_TrtI_Pub <- pred_mediator("Incongruent", "Public")
+
+# Extract outcome model population-level coefficients (one row per draw)
+post_out <- as_draws_df(fit_out) %>%
+  dplyr::select(starts_with("b_")) %>%
+  dplyr::select(
+    b_Intercept,
+    b_Agent_TypefCongruent   = tidyselect::any_of("b_Agent_TypefCongruent"),
+    b_Agent_TypefIncongruent = tidyselect::any_of("b_Agent_TypefIncongruent"),
+    b_ContextEffectfPublic   = tidyselect::any_of("b_ContextEffectfPublic"),
+    b_GTE_median_adj
+  )
+
+# Safety: fill missing columns with 0 if a factor level/term wasn't present
+for (nm in c("b_Agent_TypefCongruent","b_Agent_TypefIncongruent","b_ContextEffectfPublic")) {
+  if (!nm %in% names(post_out)) post_out[[nm]] <- 0
+}
+
+# ---- PAIR MEDIATOR & OUTCOME DRAWS RANDOMLY (KEY FIX) ----
+set.seed(123)  # reproducibility
+n_med <- length(m_Actx_Res)       # mediator draws
+n_out <- nrow(post_out)           # outcome draws
+N     <- max(n_med, n_out)
+
+idx_med <- sample.int(n_med, size = N, replace = TRUE)
+idx_out <- sample.int(n_out, size = N, replace = TRUE)
+
+# Aligned outcome draws
+post_out_aligned <- post_out[idx_out, ]
+
+# Aligned mediator means for each (agent, context)
+m_Actx_Res_a <- m_Actx_Res[idx_med]
+m_Actx_Pub_a <- m_Actx_Pub[idx_med]
+m_TrtC_Res_a <- m_TrtC_Res[idx_med]
+m_TrtC_Pub_a <- m_TrtC_Pub[idx_med]
+m_TrtI_Res_a <- m_TrtI_Res[idx_med]
+m_TrtI_Pub_a <- m_TrtI_Pub[idx_med]
+
+# Expected mean under Agent, Context, mediator m (Gamma-log: mu = exp(eta))
+mu_fun <- function(draws, agent, ctx, m) {
+  agent_term <- dplyr::case_when(
+    agent == "Acontextual" ~ 0,
+    agent == "Congruent"   ~ draws$b_Agent_TypefCongruent,
+    agent == "Incongruent" ~ draws$b_Agent_TypefIncongruent,
+    TRUE ~ 0
+  )
+  ctx_term <- ifelse(ctx == "Public", draws$b_ContextEffectfPublic, 0)
+  exp(draws$b_Intercept + agent_term + ctx_term + draws$b_GTE_median_adj * m)
+}
+
+# Context weights (Residential, Public)
+if (!exists("ctx_w")) {
+  ctx_w <- prop.table(table(Merged_Data$ContextEffectf)) |> as.numeric()
+  names(ctx_w) <- levels(Merged_Data$ContextEffectf)
+}
+w_res <- unname(ctx_w["Residential"])
+w_pub <- unname(ctx_w["Public"])
+if (any(is.na(c(w_res, w_pub)))) { w_res <- 0.5; w_pub <- 0.5 }
+
+# -------- One contrast calculator (against Acontextual) --------
+compute_contrast <- function(treat_label, m_treat_res_a, m_treat_pub_a, draws_aligned) {
+  # Mediator under control (Acontextual) and treatment, per context (aligned)
+  m0_res <- m_Actx_Res_a
+  m0_pub <- m_Actx_Pub_a
+  m1_res <- m_treat_res_a
+  m1_pub <- m_treat_pub_a
+
+  draws <- draws_aligned
+
+  # Context-marginal potential outcomes
+  Y00_res <- mu_fun(draws, "Acontextual", "Residential", m0_res)
+  Y00_pub <- mu_fun(draws, "Acontextual", "Public",      m0_pub)
+  Y00 <- w_res * Y00_res + w_pub * Y00_pub
+
+  Y10_res <- mu_fun(draws, treat_label,  "Residential", m0_res)
+  Y10_pub <- mu_fun(draws, treat_label,  "Public",      m0_pub)
+  Y10 <- w_res * Y10_res + w_pub * Y10_pub
+
+  Y11_res <- mu_fun(draws, treat_label,  "Residential", m1_res)
+  Y11_pub <- mu_fun(draws, treat_label,  "Public",      m1_pub)
+  Y11 <- w_res * Y11_res + w_pub * Y11_pub
+
+  # Effects
+  NIE <- Y11 - Y10
+  NDE <- Y10 - Y00
+  TE  <- Y11 - Y00
+
+  RR_NIE <- Y11 / Y10
+  RR_NDE <- Y10 / Y00
+  RR_TE  <- Y11 / Y00
+
+  tibble(
+    contrast     = treat_label,
+    NIE_mean     = mean(NIE), NIE_l95     = quantile(NIE, probs[1]), NIE_u95     = quantile(NIE, probs[2]),
+    NDE_mean     = mean(NDE), NDE_l95     = quantile(NDE, probs[1]), NDE_u95     = quantile(NDE, probs[2]),
+    TE_mean      = mean(TE),  TE_l95      = quantile(TE,  probs[1]), TE_u95      = quantile(TE,  probs[2]),
+    RR_NIE_mean  = mean(RR_NIE), RR_NIE_l95 = quantile(RR_NIE, probs[1]), RR_NIE_u95 = quantile(RR_NIE, probs[2]),
+    RR_NDE_mean  = mean(RR_NDE), RR_NDE_l95 = quantile(RR_NDE, probs[1]), RR_NDE_u95 = quantile(RR_NDE, probs[2]),
+    RR_TE_mean   = mean(RR_TE),  RR_TE_l95  = quantile(RR_TE,  probs[1]), RR_TE_u95  = quantile(RR_TE,  probs[2])
+  )
+}
+
+# -------- Run for both contrasts using aligned draws --------
+out_congruent <- compute_contrast(
+  "Congruent",
+  m_TrtC_Res_a, m_TrtC_Pub_a,
+  draws_aligned = post_out_aligned
+)
+
+out_incongr <- compute_contrast(
+  "Incongruent",
+  m_TrtI_Res_a, m_TrtI_Pub_a,
+  draws_aligned = post_out_aligned
+)
+
+med_summary <- bind_rows(out_congruent, out_incongr) %>%
+  mutate(
+    NIE_95     = sprintf("%.3f [%.3f, %.3f]", NIE_mean,   NIE_l95,   NIE_u95),
+    NDE_95     = sprintf("%.3f [%.3f, %.3f]", NDE_mean,   NDE_l95,   NDE_u95),
+    TE_95      = sprintf("%.3f [%.3f, %.3f]", TE_mean,    TE_l95,    TE_u95),
+    RR_NIE_95  = sprintf("%.3f [%.3f, %.3f]", RR_NIE_mean, RR_NIE_l95, RR_NIE_u95),
+    RR_NDE_95  = sprintf("%.3f [%.3f, %.3f]", RR_NDE_mean, RR_NDE_l95, RR_NDE_u95),
+    RR_TE_95   = sprintf("%.3f [%.3f, %.3f]", RR_TE_mean,  RR_TE_l95,  RR_TE_u95)
+  ) %>%
+  select(
+    Contrast = contrast,
+    NIE_95, NDE_95, TE_95,
+    RR_NIE_95, RR_NDE_95, RR_TE_95
+  )
+
+med_summary
+
+```
+
+```{r}
+# ============================================================
+# Counterfactual mediation with a single mediator (GTE)
+#   Models: fit_med (Beta-logit), fit_out (Gamma-log)
+#   Baseline (control): Agent_Typef = "Acontextual"
+#   Treatments: "Congruent" or "Incongruent"
+#   Context averaged using ctx_w (from your pipeline)
+#   Credible intervals: 89%
+# ============================================================
+
+
+
+# Use 89% credible intervals
+probs <- c(0.055, 0.945)
+
+stopifnot(all(c("Acontextual","Congruent","Incongruent") %in% levels(Merged_Data$Agent_Typef)))
+stopifnot(all(c("Residential","Public") %in% levels(Merged_Data$ContextEffectf)))
+
+# Helper: posterior expected GTE for (Agent, Context), population level (no REs)
+pred_mediator <- function(agent, ctx) {
+  newd <- tibble(
+    Agent_Typef = factor(agent, levels = levels(Merged_Data$Agent_Typef)),
+    ContextEffectf = factor(ctx, levels = levels(Merged_Data$ContextEffectf)),
+    SubjectID = NA,  # ignored when re_formula = NA
+    PointingTaskStartingLocations = NA
+  )
+  # Expected value on response scale (in (0,1))
+  brms::posterior_epred(fit_med, newdata = newd, re_formula = NA)[, 1]
+}
+
+# Prepare one vector of mediator draws per (agent, context)
+m_Actx_Res <- pred_mediator("Acontextual", "Residential")
+m_Actx_Pub <- pred_mediator("Acontextual", "Public")
+m_TrtC_Res <- pred_mediator("Congruent",   "Residential")
+m_TrtC_Pub <- pred_mediator("Congruent",   "Public")
+m_TrtI_Res <- pred_mediator("Incongruent", "Residential")
+m_TrtI_Pub <- pred_mediator("Incongruent", "Public")
+
+# Extract outcome model population-level coefficients (one row per draw)
+post_out <- as_draws_df(fit_out) %>%
+  dplyr::select(starts_with("b_")) %>%
+  dplyr::select(
+    b_Intercept,
+    b_Agent_TypefCongruent   = tidyselect::any_of("b_Agent_TypefCongruent"),
+    b_Agent_TypefIncongruent = tidyselect::any_of("b_Agent_TypefIncongruent"),
+    b_ContextEffectfPublic   = tidyselect::any_of("b_ContextEffectfPublic"),
+    b_GTE_median_adj
+  )
+
+# Safety: fill missing columns with 0 if a factor level/term wasn't present
+for (nm in c("b_Agent_TypefCongruent","b_Agent_TypefIncongruent","b_ContextEffectfPublic")) {
+  if (!nm %in% names(post_out)) post_out[[nm]] <- 0
+}
+
+# ---- PAIR MEDIATOR & OUTCOME DRAWS RANDOMLY (KEY FIX) ----
+set.seed(123)  # reproducibility
+n_med <- length(m_Actx_Res)       # mediator draws
+n_out <- nrow(post_out)           # outcome draws
+N     <- max(n_med, n_out)
+
+idx_med <- sample.int(n_med, size = N, replace = TRUE)
+idx_out <- sample.int(n_out, size = N, replace = TRUE)
+
+# Aligned outcome draws
+post_out_aligned <- post_out[idx_out, ]
+
+# Aligned mediator means for each (agent, context)
+m_Actx_Res_a <- m_Actx_Res[idx_med]
+m_Actx_Pub_a <- m_Actx_Pub[idx_med]
+m_TrtC_Res_a <- m_TrtC_Res[idx_med]
+m_TrtC_Pub_a <- m_TrtC_Pub[idx_med]
+m_TrtI_Res_a <- m_TrtI_Res[idx_med]
+m_TrtI_Pub_a <- m_TrtI_Pub[idx_med]
+
+# Expected mean under Agent, Context, mediator m (Gamma-log: mu = exp(eta))
+mu_fun <- function(draws, agent, ctx, m) {
+  agent_term <- dplyr::case_when(
+    agent == "Acontextual" ~ 0,
+    agent == "Congruent"   ~ draws$b_Agent_TypefCongruent,
+    agent == "Incongruent" ~ draws$b_Agent_TypefIncongruent,
+    TRUE ~ 0
+  )
+  ctx_term <- ifelse(ctx == "Public", draws$b_ContextEffectfPublic, 0)
+  exp(draws$b_Intercept + agent_term + ctx_term + draws$b_GTE_median_adj * m)
+}
+
+# Context weights (Residential, Public)
+if (!exists("ctx_w")) {
+  ctx_w <- prop.table(table(Merged_Data$ContextEffectf)) |> as.numeric()
+  names(ctx_w) <- levels(Merged_Data$ContextEffectf)
+}
+w_res <- unname(ctx_w["Residential"])
+w_pub <- unname(ctx_w["Public"])
+if (any(is.na(c(w_res, w_pub)))) { w_res <- 0.5; w_pub <- 0.5 }
+
+# -------- One contrast calculator (against Acontextual) --------
+compute_contrast <- function(treat_label, m_treat_res_a, m_treat_pub_a, draws_aligned) {
+  # Mediator under control (Acontextual) and treatment, per context (aligned)
+  m0_res <- m_Actx_Res_a
+  m0_pub <- m_Actx_Pub_a
+  m1_res <- m_treat_res_a
+  m1_pub <- m_treat_pub_a
+
+  draws <- draws_aligned
+
+  # Context-marginal potential outcomes
+  Y00_res <- mu_fun(draws, "Acontextual", "Residential", m0_res)
+  Y00_pub <- mu_fun(draws, "Acontextual", "Public",      m0_pub)
+  Y00 <- w_res * Y00_res + w_pub * Y00_pub
+
+  Y10_res <- mu_fun(draws, treat_label,  "Residential", m0_res)
+  Y10_pub <- mu_fun(draws, treat_label,  "Public",      m0_pub)
+  Y10 <- w_res * Y10_res + w_pub * Y10_pub
+
+  Y11_res <- mu_fun(draws, treat_label,  "Residential", m1_res)
+  Y11_pub <- mu_fun(draws, treat_label,  "Public",      m1_pub)
+  Y11 <- w_res * Y11_res + w_pub * Y11_pub
+
+  # Effects
+  NIE <- Y11 - Y10
+  NDE <- Y10 - Y00
+  TE  <- Y11 - Y00
+
+  RR_NIE <- Y11 / Y10
+  RR_NDE <- Y10 / Y00
+  RR_TE  <- Y11 / Y00
+
+  tibble(
+    contrast   = treat_label,
+    NIE_mean   = mean(NIE), NIE_l89   = quantile(NIE, probs[1]), NIE_u89   = quantile(NIE, probs[2]),
+    NDE_mean   = mean(NDE), NDE_l89   = quantile(NDE, probs[1]), NDE_u89   = quantile(NDE, probs[2]),
+    TE_mean    = mean(TE),  TE_l89    = quantile(TE,  probs[1]), TE_u89    = quantile(TE,  probs[2]),
+    RR_NIE_mean= mean(RR_NIE), RR_NIE_l89 = quantile(RR_NIE, probs[1]), RR_NIE_u89 = quantile(RR_NIE, probs[2]),
+    RR_NDE_mean= mean(RR_NDE), RR_NDE_l89 = quantile(RR_NDE, probs[1]), RR_NDE_u89 = quantile(RR_NDE, probs[2]),
+    RR_TE_mean = mean(RR_TE),  RR_TE_l89  = quantile(RR_TE,  probs[1]), RR_TE_u89  = quantile(RR_TE,  probs[2])
+  )
+}
+
+# -------- Run for both contrasts using aligned draws --------
+out_congruent <- compute_contrast(
+  "Congruent",
+  m_TrtC_Res_a, m_TrtC_Pub_a,
+  draws_aligned = post_out_aligned
+)
+
+out_incongr <- compute_contrast(
+  "Incongruent",
+  m_TrtI_Res_a, m_TrtI_Pub_a,
+  draws_aligned = post_out_aligned
+)
+
+med_summary <- bind_rows(out_congruent, out_incongr) %>%
+  mutate(
+    NIE_89     = sprintf("%.3f [%.3f, %.3f]", NIE_mean,   NIE_l89,   NIE_u89),
+    NDE_89     = sprintf("%.3f [%.3f, %.3f]", NDE_mean,   NDE_l89,   NDE_u89),
+    TE_89      = sprintf("%.3f [%.3f, %.3f]", TE_mean,    TE_l89,    TE_u89),
+    RR_NIE_89  = sprintf("%.3f [%.3f, %.3f]", RR_NIE_mean, RR_NIE_l89, RR_NIE_u89),
+    RR_NDE_89  = sprintf("%.3f [%.3f, %.3f]", RR_NDE_mean, RR_NDE_l89, RR_NDE_u89),
+    RR_TE_89   = sprintf("%.3f [%.3f, %.3f]", RR_TE_mean,  RR_TE_l89,  RR_TE_u89)
+  ) %>%
+  select(
+    Contrast = contrast,
+    NIE_89, NDE_89, TE_89,
+    RR_NIE_89, RR_NDE_89, RR_TE_89
+  )
+
+med_summary
+```
+
+
+```{r}
+
+# Extract fixed effects estimates and credible intervals
+betas_df <- broom.mixed::tidy(fit_out, effects = "fixed", conf.int = TRUE, conf.level = 0.95)
+
+# Select and rename relevant columns clearly
+betas_clean <- betas_df[, c("term", "estimate", "conf.low", "conf.high")]
+colnames(betas_clean) <- c("Predictor", "Estimate", "CI_lower", "CI_upper")
+
+# Export as CSV
+
+write.csv(betas_clean, "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/Performance_model_betas_new.csv", row.names = FALSE)
+write.csv(med_summary, "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/med_summary.csv", row.names = FALSE)
+```
+
+
+
+
+

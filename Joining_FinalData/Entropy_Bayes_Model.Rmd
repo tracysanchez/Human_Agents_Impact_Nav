@@ -1,0 +1,1563 @@
+---
+title: "Eye-Tracking_combinedModels"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    toc_depth: 6
+    mathjax: null
+    css: doc.css # To set style to maximum in a separate file
+---
+```{r setup, include=FALSE}
+# Load required packages
+library(dplyr)         # Data manipulation
+library(ggplot2)       # Visualization
+library(readr)         # Reading CSV files
+library(lubridate)     # Working with dates and timestamps
+library(zoo)           # Required for time-series data
+library(tidyverse)     # Meta-package (includes dplyr, ggplot2, tidyr, etc.)
+library(tidyr)         # Data tidying functions
+library(brms)          # Bayesian regression modeling via Stan
+library(stringr)       # String manipulation (used for ID extraction)
+library(mice)          # For missing data
+library(bridgesampling)
+library(purrr)
+library(tibble)
+
+
+
+```
+
+
+
+```{r echo = FALSE, warning = FALSE}
+HumanA_Fixations <- read.csv("/Volumes/TwoTeras/2_DataSets_Experiments_1_2/BehavioralData_Fixations_Wide.csv", sep =",")
+head(HumanA_Fixations)
+```
+
+
+```{r}
+unique(HumanA_Fixations$SubjectID)
+```
+```{r}
+Entropy <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Entropy_Results/grouped_for_LMM_Chao_Shen_Normalized.csv", sep =",")
+# Ensure Entropy is a data frame or tibble
+Entropy <- as.data.frame(Entropy)
+
+# Drop columns X and Experiment using base R
+Entropy <- Entropy[, !(names(Entropy) %in% c("X", "Experiment"))]
+
+# View the updated dataset
+head(Entropy)
+unique(Entropy$Participant_ID)
+```
+
+```{r}
+
+# Rename columns in the Entropy dataset
+Entropy <- Entropy %>%
+  rename(
+    avatar_ID=  Agent_ID,
+    SubjectID= Participant_ID
+  )
+
+Entropy <- Entropy %>%
+  mutate(SubjectID = as.integer(SubjectID))
+
+# Perform concatenation based on avatar_ID and SubjectID
+Merged_Data <- HumanA_Fixations %>%
+  inner_join(Entropy, by = c("avatar_ID", "SubjectID"))
+
+
+
+# View the merged dataset
+head(Merged_Data)
+```
+
+```{r}
+
+Merged_Data <- Merged_Data %>% 
+  # Recoding variables
+  mutate(
+    ContextEffect = case_when(
+      Context == "False" ~ -0.5,
+      Context == "True" ~ 0.5,
+      TRUE ~ NaN
+    ),
+    AgentPresence = case_when(
+      AvatarPresenceCategory == "Omitted" ~ -0.5,
+      AvatarPresenceCategory == "Present" ~ 0.5,
+      TRUE ~ NaN
+    ),
+    Agent_Action_level = case_when(
+      Agent_Category == "Passive" ~ -0.5,
+      Agent_Category == "Active" ~ 0.5,
+      TRUE ~ NaN
+    ),
+    Experiment = case_when(
+      Experiment == 1 ~ -0.5,
+      Experiment == 2 ~ 0.5,
+      TRUE ~ NaN
+    ),
+    # Define Agent_Type variable for contrast coding
+    Agent_Type = case_when(
+      Agent_Action_level == -0.5 ~ 0,   # Passive -> Acontextual
+      Agent_Action_level == 0.5 & Experiment == -0.5 ~ 0.5,  # Active + Experiment 1 -> Congruent
+      Agent_Action_level == 0.5 & Experiment == 0.5 ~ -0.5,  # Active + Experiment 2 -> Incongruent
+      TRUE ~ NaN
+    )
+  ) %>%
+  # Convert numeric variables to factors and set "Acontextual" as the reference level
+  mutate(
+    ContextEffectf = factor(ContextEffect, levels = c(-0.5, 0.5), labels = c('Residential', 'Public')),
+    AgentPresencef = factor(AgentPresence, levels = c(-0.5, 0.5), labels = c('Omitted', 'Displayed')),
+    Agent_Action_levelf = factor(Agent_Action_level, levels = c(-0.5, 0.5), labels = c('Passive', 'Active')),
+    Experimentf = factor(Experiment, levels = c(-0.5, 0.5), labels = c('Experiment 1', 'Experiment 2')),
+    Agent_Typef = factor(Agent_Type, levels = c(0, 0.5, -0.5), labels = c('Acontextual', 'Congruent', 'Incongruent'))
+  ) %>%
+  # Ensure "Acontextual" is the reference level for contrast coding
+  mutate(Agent_Typef = relevel(Agent_Typef, ref = "Acontextual"))
+
+
+
+
+# Continue pipeline with centering dwelling time variables
+Merged_Data <- Merged_Data %>%
+  mutate(
+    Dwelling_Time_Building_Gaze_Centered = Dwelling_Time_Building_Gaze - mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+    Dwelling_Time_Agent_Gaze_Centered = Dwelling_Time_Agent_Gaze - mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE)
+  )
+
+# Display first few rows to verify changes
+head(Merged_Data)
+
+```
+
+
+
+
+```{r}
+
+df <- Merged_Data %>% 
+  filter(complete.cases(.))
+
+p <- ggplot(df, aes(x = AbsolutError, fill = Agent_Action_levelf)) +
+  
+  geom_histogram(aes(group = Agent_Action_levelf), 
+                 position = "identity", 
+                 alpha = 0.5, 
+                 binwidth = 10) +
+  
+  facet_grid(cols = vars(ContextEffectf)) +
+  
+  theme_bw()
+
+# Print the plot
+p
+```
+
+```{r}
+colSums(is.na(Merged_Data))
+```
+
+
+```{r}
+imputed_data <- mice(Merged_Data, method = "pmm", m = 5)
+```
+```{r}
+Merged_Data_Imputed <- complete(imputed_data)
+```
+
+```{r}
+Merged_Data <- Merged_Data_Imputed %>%
+  mutate(across(c(Dwelling_Time_Building_Gaze_Centered, Dwelling_Time_Agent_Gaze_Centered, mean), scale))
+
+```
+
+```{r}
+# Make sure levels are in your intended order
+Merged_Data <- Merged_Data |>
+  dplyr::mutate(
+    Agent_Typef     = factor(Agent_Typef,     levels = c("Acontextual","Congruent","Incongruent")),
+    ContextEffectf  = factor(ContextEffectf,  levels = c("Residential","Public"))
+  )
+# Confirm mapping: columns correspond to contrasts vs the first level
+colnames(model.matrix(~ Agent_Typef + ContextEffectf, data = Merged_Data))
+levels(Merged_Data$Agent_Typef)
+levels(Merged_Data$ContextEffectf)
+
+
+n <- nrow(df)
+Merged_Data$GTE_median_adj <- (Merged_Data$median * (n - 1) + 0.5) / n
+```
+
+
+```{r}
+# ============================================================
+# (A) Setup: levels, context weights, and safety for Beta
+# ============================================================
+
+set.seed(123)
+
+stopifnot(is.factor(Merged_Data$Agent_Typef))
+stopifnot(is.factor(Merged_Data$ContextEffectf))
+
+agent_lvls <- levels(Merged_Data$Agent_Typef)        # c("Acontextual","Congruent","Incongruent")
+ctx_lvls   <- levels(Merged_Data$ContextEffectf)     # c("Residential","Public")
+
+# Empirical marginal distribution of context (used for averaging)
+ctx_w <- prop.table(table(Merged_Data$ContextEffectf)) |> as.numeric()
+names(ctx_w) <- ctx_lvls
+
+
+
+```
+
+```{r}
+# ============================================================
+# (B) Joint mediator model (captures dependence via shared REs)
+#     - Beta for GTE, Gamma-log for both dwell mediators
+#     - Shared (correlated) random intercepts at SubjectID & StartLoc
+# ============================================================
+ffit_med_mv <- brm(
+  brms::bf(
+    GTE_median_adj ~ Agent_Typef + ContextEffectf +
+      (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+    family = Beta()
+  ) +
+  brms::bf(
+    Dwelling_Time_Agent_Gaze ~ Agent_Typef + ContextEffectf +
+      (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+    family = Gamma(link = "log")
+  ) +
+  brms::bf(
+    Dwelling_Time_Building_Gaze ~ Agent_Typef + ContextEffectf +
+      (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+    family = Gamma(link = "log")
+  ) +
+  set_rescor(FALSE),   # residual correlation off (different families)
+  data   = Merged_Data,
+  chains = 4, cores = 4, iter = 4000, warmup = 2000,
+  save_pars = save_pars(all = TRUE), seed = 123
+)
+
+```
+```{r}
+# ============================================================
+# (C) Outcome model with treatment–mediator interactions
+#     (keeps population-level mediation with re_formula = NA)
+# ============================================================
+fit_Y_int <- brm(
+  AbsolutError ~
+    Agent_Typef * (GTE_median_adj + Dwelling_Time_Agent_Gaze + Dwelling_Time_Building_Gaze) +
+    ContextEffectf +
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data   = Merged_Data,
+  family = Gamma(link = "log"),
+  prior  = c(
+    prior(normal(0, 1), class = "b"),
+    prior(cauchy(0, 2.5), class = "Intercept"),
+    prior(cauchy(0, 2.5), class = "sd")
+  ),
+  chains = 4, cores = 4, iter = 4000, warmup = 2000,
+  save_pars = save_pars(all = TRUE), seed = 123
+)
+
+
+```
+```{r}
+# ============================================================
+# (D) Helpers: population-level predictions (averaged over context)
+# ============================================================
+# Build one row for Y given (A, m1, m2, m3, ctx)
+nd_Y <- function(agent, gte, dwA, dwB, ctx) {
+  tibble(
+    Agent_Typef = factor(agent, levels = agent_lvls),
+    GTE_median_adj = gte,
+    Dwelling_Time_Agent_Gaze = dwA,
+    Dwelling_Time_Building_Gaze = dwB,
+    ContextEffectf = factor(ctx, levels = ctx_lvls)
+  )
+}
+
+# Joint mediator predictions under agent level 'agent' at draw 'draw'
+# - Posterior means on the RESPONSE scale
+# - Averaged over ContextEffectf with weights ctx_w
+pred_mediators_joint <- function(ffit_med_mv, agent, draw) {
+  new_ctx <- bind_rows(lapply(ctx_lvls, function(ctx) {
+    tibble(
+      Agent_Typef = factor(agent, levels = agent_lvls),
+      ContextEffectf = factor(ctx, levels = ctx_lvls)
+    )
+  }))
+
+  # Each call returns draws x Nobs
+  # Use the SAME 'draw' index for all three mediators to preserve dependence
+  gte_draws <- posterior_epred(ffit_med_mv, resp = "GTE_median_adj",
+                               newdata = new_ctx, re_formula = NA, summary = FALSE)
+  dwa_draws <- posterior_epred(ffit_med_mv, resp = "Dwelling_Time_Agent_Gaze",
+                               newdata = new_ctx, re_formula = NA, summary = FALSE)
+  dwb_draws <- posterior_epred(ffit_med_mv, resp = "Dwelling_Time_Building_Gaze",
+                               newdata = new_ctx, re_formula = NA, summary = FALSE)
+
+  m1 <- sum(gte_draws[draw, ] * ctx_w)  # GTE
+  m2 <- sum(dwa_draws[draw, ] * ctx_w)  # Dwell_Agent
+  m3 <- sum(dwb_draws[draw, ] * ctx_w)  # Dwell_Building
+
+  list(m1 = m1, m2 = m2, m3 = m3)
+}
+
+# Outcome (Gamma mean on response scale) averaged over context
+predY_pop <- function(fit_Y, agent, gte, dwA, dwB, draw) {
+  new_ctx <- bind_rows(lapply(ctx_lvls, function(ctx) {
+    nd_Y(agent, gte, dwA, dwB, ctx)
+  }))
+  mu <- posterior_epred(fit_Y, newdata = new_ctx, re_formula = NA, summary = FALSE)
+  # posterior_epred returns draws x Nobs
+  sum(mu[draw, ] * ctx_w)
+}
+
+```
+
+```{r}
+# ============================================================
+# (E) Counterfactual loop using JOINT mediator predictions
+#     (clean, no alias; brms resp names handled)
+# ============================================================
+
+# brms sanitizes response names by removing non-alphanumeric chars.
+resp_name <- function(x) gsub("[^A-Za-z0-9]", "", x)
+resp <- list(
+  gte = resp_name("GTE_median_adj"),              # typically "GTEmedianadj"
+  dwa = resp_name("Dwelling_Time_Agent_Gaze"),    # "DwellingTimeAgentGaze"
+  dwb = resp_name("Dwelling_Time_Building_Gaze")  # "DwellingTimeBuildingGaze"
+)
+
+# Joint mediator predictions under agent level 'agent' at draw 'draw'
+# - Posterior means on the RESPONSE scale
+# - Averaged over ContextEffectf with weights ctx_w
+pred_mediators_joint <- function(ffit_med_mv, agent, draw) {
+  new_ctx <- dplyr::bind_rows(lapply(ctx_lvls, function(ctx) {
+    tibble::tibble(
+      Agent_Typef    = factor(agent, levels = agent_lvls),
+      ContextEffectf = factor(ctx,    levels = ctx_lvls)
+    )
+  }))
+
+  gte_draws <- posterior_epred(
+    ffit_med_mv, resp = resp$gte,
+    newdata = new_ctx, re_formula = NA, summary = FALSE
+  )
+  dwa_draws <- posterior_epred(
+    ffit_med_mv, resp = resp$dwa,
+    newdata = new_ctx, re_formula = NA, summary = FALSE
+  )
+  dwb_draws <- posterior_epred(
+    ffit_med_mv, resp = resp$dwb,
+    newdata = new_ctx, re_formula = NA, summary = FALSE
+  )
+
+  m1 <- as.numeric(gte_draws[draw, ] %*% ctx_w)  # GTE
+  m2 <- as.numeric(dwa_draws[draw, ] %*% ctx_w)  # Dwell_Agent
+  m3 <- as.numeric(dwb_draws[draw, ] %*% ctx_w)  # Dwell_Building
+  list(m1 = m1, m2 = m2, m3 = m3)
+}
+
+# Contrasts to evaluate
+contrasts <- list(
+  c("Acontextual","Congruent"),
+  c("Acontextual","Incongruent"),
+  c("Congruent","Incongruent")
+)
+
+# Shared number of draws across mediator and outcome models
+n_med <- dim(
+  posterior_epred(
+    ffit_med_mv,
+    resp = resp$gte,
+    newdata = tibble::tibble(
+      Agent_Typef    = factor(agent_lvls[1], levels = agent_lvls),
+      ContextEffectf = factor(ctx_lvls[1],   levels = ctx_lvls)
+    ),
+    re_formula = NA, summary = FALSE
+  )
+)[1]
+
+n_y <- dim(
+  posterior_epred(
+    fit_Y_int,
+    newdata = nd_Y(agent_lvls[1], gte = 0.5, dwA = 1, dwB = 1, ctx = ctx_lvls[1]),
+    re_formula = NA, summary = FALSE
+  )
+)[1]
+
+n_draws <- min(4000L, n_med, n_y)
+
+results <- vector("list", length(contrasts))
+
+for (i in seq_along(contrasts)) {
+  a0 <- contrasts[[i]][1]  # baseline
+  a1 <- contrasts[[i]][2]  # treatment
+  message("Processing (joint mediators): ", a1, " vs ", a0)
+
+  eff <- purrr::map_dfr(seq_len(n_draws), function(d) {
+    # Mediators under a0 and a1 (JOINT draw alignment via same 'd')
+    med_a0 <- pred_mediators_joint(ffit_med_mv, a0, d)
+    med_a1 <- pred_mediators_joint(ffit_med_mv, a1, d)
+
+    m1_a0 <- med_a0$m1; m2_a0 <- med_a0$m2; m3_a0 <- med_a0$m3
+    m1_a1 <- med_a1$m1; m2_a1 <- med_a1$m2; m3_a1 <- med_a1$m3
+
+    # Potential outcomes (Gamma mean on response scale), averaged over context
+    Y00 <- predY_pop(fit_Y_int, a0, m1_a0, m2_a0, m3_a0, d)  # baseline
+    Y10 <- predY_pop(fit_Y_int, a1, m1_a0, m2_a0, m3_a0, d)  # direct (A switches; Ms fixed at a0)
+
+    # Single-path indirects
+    Y01_m1  <- predY_pop(fit_Y_int, a0, m1_a1, m2_a0, m3_a0, d)  # via GTE only
+    Y01_m2  <- predY_pop(fit_Y_int, a0, m1_a0, m2_a1, m3_a0, d)  # via Dwell_Agent only
+    Y01_m3  <- predY_pop(fit_Y_int, a0, m1_a0, m2_a0, m3_a1, d)  # via Dwell_Building only
+    Y01_all <- predY_pop(fit_Y_int, a0, m1_a1, m2_a1, m3_a1, d)  # joint mediator change
+
+    # Treatment with its own mediators
+    Y11 <- predY_pop(fit_Y_int, a1, m1_a1, m2_a1, m3_a1, d)
+
+    # Effects (response scale)
+    NDE       <- Y10 - Y00
+    NIE_GTE   <- Y01_m1 - Y00
+    NIE_DW_A  <- Y01_m2 - Y00
+    NIE_DW_B  <- Y01_m3 - Y00
+    NIE_joint <- (Y01_all - Y00) - (NIE_GTE + NIE_DW_A + NIE_DW_B)
+    TE        <- Y11 - Y00
+
+    tibble::tibble(.draw = d, comparison = paste(a1,"vs",a0),
+                   NDE, NIE_GTE, NIE_DW_A, NIE_DW_B, NIE_joint, TE)
+  })
+
+  results[[i]] <- eff
+}
+
+combined <- dplyr::bind_rows(results)
+```
+
+
+```{r}
+# Decomposition check: TE ≈ NDE + NIEs + NIE_joint
+check <- combined |>
+  dplyr::mutate(diff = TE - (NDE + NIE_GTE + NIE_DW_A + NIE_DW_B + NIE_joint)) |>
+  dplyr::group_by(comparison) |>
+  dplyr::summarise(mean_diff = mean(diff), max_abs_diff = max(abs(diff)), .groups = "drop")
+print(check)
+
+# 89% summaries
+summary_df <- combined |>
+  tidyr::pivot_longer(c(NDE, NIE_GTE, NIE_DW_A, NIE_DW_B, NIE_joint, TE),
+                      names_to = "effect", values_to = "value") |>
+  dplyr::group_by(comparison, effect) |>
+  dplyr::summarise(
+    mean  = mean(value),
+    lower = quantile(value, 0.055),
+    upper = quantile(value, 0.945),
+    prob_negative = mean(value < 0),
+    .groups = "drop"
+  )
+print(summary_df)
+```
+
+
+
+
+
+
+```{r}
+# Step 2: Outcome model with Experiment interaction
+fit_Y <- brm(
+  AbsolutError ~ Agent_Typef * Experiment + GTE_median_adj * Experiment + (1 | Experiment / SubjectID),
+  data = Merged_Data,
+  family = Gamma(link = "log"),
+  prior = c(
+    prior(normal(0, 1), class = "b"),
+    prior(cauchy(0, 1), class = "sd")
+  ),
+  chains = 4, cores = 4, iter = 4000
+)
+
+```
+
+
+```{r}
+library(tidyverse)
+
+# Valid within-experiment contrasts only
+valid_pairs <- tibble::tribble(
+  ~Experiment, ~a0,           ~a1,
+         -0.5, "Acontextual", "Congruent",    # Exp 1
+          0.5, "Acontextual", "Incongruent"   # Exp 2
+)
+
+n_draws <- 4000L
+results <- list()
+
+for (k in seq_len(nrow(valid_pairs))) {
+  exp_k <- valid_pairs$Experiment[k]
+  a0    <- valid_pairs$a0[k]
+  a1    <- valid_pairs$a1[k]
+
+  message("Processing Exp ", exp_k, ": ", a1, " vs ", a0)
+
+  effects <- purrr::map_dfr(seq_len(n_draws), function(draw_d) {
+
+    # ---- Mediator (Beta) population-level means ----
+    new_M_a0 <- tibble(Agent_Typef = a0, Experiment = exp_k)
+    new_M_a1 <- tibble(Agent_Typef = a1, Experiment = exp_k)
+
+    m_a0 <- fitted(fit_M, newdata = new_M_a0, re_formula = NA, summary = FALSE)[draw_d, 1]
+    m_a1 <- fitted(fit_M, newdata = new_M_a1, re_formula = NA, summary = FALSE)[draw_d, 1]
+
+    # ---- Outcome (Gamma-log) population-level means ----
+    # Y00 = Y(a0, M(a0))
+    new_Y00 <- tibble(Agent_Typef = a0, Experiment = exp_k, GTE_median_adj = m_a0)
+    Y00 <- fitted(fit_Y, newdata = new_Y00, re_formula = NA, summary = FALSE)[draw_d, 1]
+
+    # Y10 = Y(a1, M(a0)) -> NDE component
+    new_Y10 <- tibble(Agent_Typef = a1, Experiment = exp_k, GTE_median_adj = m_a0)
+    Y10 <- fitted(fit_Y, newdata = new_Y10, re_formula = NA, summary = FALSE)[draw_d, 1]
+
+    # Y01 = Y(a0, M(a1)) -> NIE component (alt form)
+    new_Y01 <- tibble(Agent_Typef = a0, Experiment = exp_k, GTE_median_adj = m_a1)
+    Y01 <- fitted(fit_Y, newdata = new_Y01, re_formula = NA, summary = FALSE)[draw_d, 1]
+
+    # Y11 = Y(a1, M(a1)) -> TE component
+    new_Y11 <- tibble(Agent_Typef = a1, Experiment = exp_k, GTE_median_adj = m_a1)
+    Y11 <- fitted(fit_Y, newdata = new_Y11, re_formula = NA, summary = FALSE)[draw_d, 1]
+
+    tibble(
+      .draw = draw_d,
+      NIE = Y01 - Y00,        # == Y11 - Y10 under standard identification
+      NDE = Y10 - Y00,
+      TE  = Y11 - Y00
+    )
+  }) %>%
+    mutate(comparison = paste0("Exp ", exp_k, ": ", a1, " vs ", a0))
+
+  results[[paste(exp_k, a0, a1, sep = "_")]] <- effects
+}
+
+combined <- bind_rows(results)
+
+summary_df <- combined %>%
+  pivot_longer(c(NIE, NDE, TE)) %>%
+  group_by(comparison, name) %>%
+  summarise(
+    mean = mean(value),
+    lower = quantile(value, 0.025),
+    upper = quantile(value, 0.975),
+    prob_positive = mean(value > 0),
+    .groups = "drop"
+  )
+
+print(summary_df)
+
+```
+
+
+
+
+
+```{r}
+bayesian_performance_model <- brm(
+  AbsolutError ~ Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +
+    ContextEffectf + Agent_Typef*median + 
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data = Merged_Data,
+  family = Gamma(link = "log"),  # Use lognormal or another appropriate family
+  cores = 4, chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+
+```
+```{r}
+bayesian_performance_model_no_inter <- brm(
+  AbsolutError ~ Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +
+    ContextEffectf + Agent_Typef + median + 
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data = Merged_Data,
+  family = Gamma(link = "log"),  # Use lognormal or another appropriate family
+  cores = 4, chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+
+```
+
+
+```{r}
+library(brms)
+
+bf_mediator <- brms::bf(median ~ Agent_Typef + (1 | SubjectID))  # no data here
+bf_outcome <- brms::bf(AbsolutError ~ median + Agent_Typef + (1 | SubjectID), family = Gamma(link = "log"))
+
+mediation_model <- brm(
+  bf_mediator + bf_outcome + set_rescor(FALSE),  # multiple formulas
+  data = Merged_Data,                            # ✅ specify data here
+  chains = 4, cores = 4, iter = 4000
+)
+
+```
+```{r}
+posterior <- posterior_samples(mediation_model)
+
+# Extract relevant coefficients
+a <- posterior$b_median_Agent_TypefIncongruent_vs_Acontextual
+b <- posterior$b_AbsolutError_median
+
+# Compute the indirect effect
+indirect <- a * b
+
+# Summarize
+quantile(indirect, probs = c(0.025, 0.5, 0.975))
+
+```
+
+```{r}
+total_effect <- indirect + posterior$b_AbsolutError_Agent_TypefIncongruent_vs_Acontextual
+quantile(total_effect, probs = c(0.025, 0.5, 0.975))
+```
+
+```{r}
+plot(bayesian_performance_model_no_inter, pars = c(
+  "b_Intercept",
+  "b_Dwelling_Time_Building_Gaze_Centered",
+  "b_Dwelling_Time_Agent_Gaze_Centered",
+  "b_ContextEffectfPublic",
+  "b_Agent_Typef2",
+  "b_Agent_Typef3",
+  "b_median"
+)) +
+  theme_minimal() +
+  labs(title = "Posterior Coefficient Estimates",
+       y = "Coefficients",
+       x = "Estimate (95% Credible Interval)")
+
+```
+
+```{r}
+# Dwelling time on AGENT (strictly positive, right-skewed)
+fit_DW_agent <- brm(
+  Dwelling_Time_Agent_Gaze ~ Agent_Typef + ContextEffectf + 
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data   = Merged_Data,
+  family = Gamma(link = "log"),
+  prior  = c(
+    prior(normal(0, 1), class = "b"),            # fixed effects
+    prior(cauchy(0, 2.5), class = "Intercept"),  # intercept
+    prior(cauchy(0, 2.5), class = "sd")          # group-level SDs
+  ),
+  chains = 4, cores = 4, iter = 4000, warmup = 2000,
+  save_pars = save_pars(all = TRUE), seed = 123
+)
+
+# Dwelling time on BUILDINGS (strictly positive, right-skewed)
+fit_DW_building <- brm(
+  Dwelling_Time_Building_Gaze ~ Agent_Typef + ContextEffectf + 
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data   = Merged_Data,
+  family = Gamma(link = "log"),
+  prior  = c(
+    prior(normal(0, 1), class = "b"),
+    prior(cauchy(0, 2.5), class = "Intercept"),
+    prior(cauchy(0, 2.5), class = "sd")
+  ),
+  chains = 4, cores = 4, iter = 4000, warmup = 2000,
+  save_pars = save_pars(all = TRUE), seed = 123
+)
+
+print(summary(fit_DW_agent,    prob = 0.89))
+print(summary(fit_DW_building, prob = 0.89))
+
+```
+
+```{r}
+# Absolute pointing error (Gamma-log), with mediator + covariates + REs
+fit_Y <- brm(
+  AbsolutError ~
+    Dwelling_Time_Building_Gaze +
+    Dwelling_Time_Agent_Gaze +
+    ContextEffectf +
+    Agent_Typef +
+    GTE_median_adj +                             # mediator
+    (1 | SubjectID) +
+    (1 | PointingTaskStartingLocations),
+  data   = Merged_Data,
+  family = Gamma(link = "log"),
+  prior  = c(
+    prior(normal(0, 1), class = "b"),            # fixed effects
+    prior(cauchy(0, 2.5), class = "Intercept"),  # intercept
+    prior(cauchy(0, 2.5), class = "sd")          # group-level SDs
+  ),
+  chains = 4, cores = 4, iter = 4000, warmup = 2000,
+  save_pars = save_pars(all = TRUE), seed = 123
+)
+
+print(summary(fit_Y, prob = 0.89))
+```
+```{r}
+# ============================================================
+# Multiple-mediators counterfactual mediation (population level)
+# Uses: fit_M, fit_DW_agent, fit_DW_building, fit_Y
+# Effects: NDE, NIE_GTE, NIE_DW_A, NIE_DW_B, NIE_joint, TE
+# 89% intervals; marginalizes over ContextEffectf by default
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+
+set.seed(123)
+
+# ---- 0) Factor levels & context weights --------------------
+stopifnot(is.factor(Merged_Data$Agent_Typef))
+stopifnot(is.factor(Merged_Data$ContextEffectf))
+
+agent_lvls <- levels(Merged_Data$Agent_Typef)         # c("Acontextual","Congruent","Incongruent")
+ctx_lvls   <- levels(Merged_Data$ContextEffectf)      # c("Residential","Public")
+
+# Empirical marginal distribution of building type (used for averaging)
+ctx_w <- prop.table(table(Merged_Data$ContextEffectf)) %>% as.numeric()
+names(ctx_w) <- ctx_lvls
+
+# If you prefer to pin to one level, uncomment e.g.:
+# ctx_lvls <- c("Residential"); ctx_w <- 1
+
+# ---- 1) Contrasts to evaluate --------------------------------
+contrasts <- list(
+  c("Acontextual","Congruent"),
+  c("Acontextual","Incongruent"),
+  c("Congruent","Incongruent")
+)
+
+# ---- 2) Helpers to build newdata rows -------------------------
+# Outcome newdata for a specific context
+nd_Y <- function(agent, gte, dwA, dwB, ctx) {
+  tibble(
+    Agent_Typef = factor(agent, levels = agent_lvls),
+    GTE_median_adj = gte,
+    Dwelling_Time_Agent_Gaze = dwA,
+    Dwelling_Time_Building_Gaze = dwB,
+    ContextEffectf = factor(ctx, levels = ctx_lvls)
+  )
+}
+
+# For mediator dwells (their models include ContextEffectf), we’ll predict
+# for both context levels and average with ctx_w; we ignore REs via re_formula = NA.
+pred_dw_pop <- function(fit_dw, agent, draw) {
+  newdata <- bind_rows(lapply(ctx_lvls, function(ctx) {
+    tibble(Agent_Typef = factor(agent, levels = agent_lvls),
+           ContextEffectf = factor(ctx, levels = ctx_lvls))
+  }))
+  mu <- fitted(fit_dw, newdata = newdata, re_formula = NA, summary = FALSE)
+  sum(mu[draw, ] * ctx_w)  # weighted avg across contexts
+}
+
+# GTE mediator doesn’t use ContextEffectf in fit_M
+pred_gte <- function(fit_M, agent, draw) {
+  mu <- fitted(fit_M,
+               newdata = tibble(Agent_Typef = factor(agent, levels = agent_lvls)),
+               re_formula = NA, summary = FALSE)
+  mu[draw, 1]
+}
+
+# Outcome predictor averaged over ContextEffectf
+predY_pop <- function(fit_Y, agent, gte, dwA, dwB, draw) {
+  newdata <- bind_rows(lapply(ctx_lvls, function(ctx) {
+    nd_Y(agent, gte, dwA, dwB, ctx)
+  }))
+  mu <- fitted(fit_Y, newdata = newdata, re_formula = NA, summary = FALSE)
+  sum(mu[draw, ] * ctx_w)
+}
+
+# ---- 3) Determine shared number of draws (cap at 4000) -------
+nM  <- nrow(fitted(fit_M,
+                   newdata = tibble(Agent_Typef = factor(agent_lvls[1], levels = agent_lvls)),
+                   re_formula = NA, summary = FALSE))
+nDA <- nrow(fitted(fit_DW_agent,
+                   newdata = tibble(Agent_Typef = factor(agent_lvls[1], levels = agent_lvls),
+                                    ContextEffectf = factor(ctx_lvls[1], levels = ctx_lvls)),
+                   re_formula = NA, summary = FALSE))
+nDB <- nrow(fitted(fit_DW_building,
+                   newdata = tibble(Agent_Typef = factor(agent_lvls[1], levels = agent_lvls),
+                                    ContextEffectf = factor(ctx_lvls[1], levels = ctx_lvls)),
+                   re_formula = NA, summary = FALSE))
+nY  <- nrow(fitted(fit_Y,
+                   newdata = nd_Y(agent_lvls[1], gte = 0.5, dwA = 1, dwB = 1, ctx = ctx_lvls[1]),
+                   re_formula = NA, summary = FALSE))
+
+n_draws <- min(4000L, nM, nDA, nDB, nY)
+
+# ---- 4) Main loop: draw-wise counterfactuals ------------------
+results <- vector("list", length(contrasts))
+
+for (i in seq_along(contrasts)) {
+  a0 <- contrasts[[i]][1]  # baseline
+  a1 <- contrasts[[i]][2]  # treatment
+  message("Processing: ", a1, " vs ", a0)
+
+  eff <- map_dfr(seq_len(n_draws), function(d) {
+    # --- Mediators under a0 and a1 (population means) ---
+    m1_a0 <- pred_gte(fit_M, a0, d)         # GTE
+    m1_a1 <- pred_gte(fit_M, a1, d)
+
+    m2_a0 <- pred_dw_pop(fit_DW_agent, a0, d)     # Dwell_Agent
+    m2_a1 <- pred_dw_pop(fit_DW_agent, a1, d)
+
+    m3_a0 <- pred_dw_pop(fit_DW_building, a0, d)  # Dwell_Building
+    m3_a1 <- pred_dw_pop(fit_DW_building, a1, d)
+
+    # --- Potential outcomes (Gamma mean on response scale) ---
+    # Baseline:
+    Y00 <- predY_pop(fit_Y, a0, m1_a0, m2_a0, m3_a0, d)
+
+    # Direct (agent switches; mediators fixed at a0 values):
+    Y10 <- predY_pop(fit_Y, a1, m1_a0, m2_a0, m3_a0, d)
+
+    # Indirect via GTE only:
+    Y01_m1 <- predY_pop(fit_Y, a0, m1_a1, m2_a0, m3_a0, d)
+
+    # Indirect via Dwell_Agent only:
+    Y01_m2 <- predY_pop(fit_Y, a0, m1_a0, m2_a1, m3_a0, d)
+
+    # Indirect via Dwell_Building only:
+    Y01_m3 <- predY_pop(fit_Y, a0, m1_a0, m2_a0, m3_a1, d)
+
+    # Joint change in all mediators (overlap beyond single paths):
+    Y01_all <- predY_pop(fit_Y, a0, m1_a1, m2_a1, m3_a1, d)
+
+    # Treatment with its own mediators:
+    Y11 <- predY_pop(fit_Y, a1, m1_a1, m2_a1, m3_a1, d)
+
+    # --- Effects decomposition ---
+    NDE      <- Y10 - Y00
+    NIE_GTE  <- Y01_m1 - Y00
+    NIE_DW_A <- Y01_m2 - Y00
+    NIE_DW_B <- Y01_m3 - Y00
+    NIE_joint <- (Y01_all - Y00) - (NIE_GTE + NIE_DW_A + NIE_DW_B)
+    TE       <- Y11 - Y00
+
+    tibble(
+      .draw = d,
+      comparison = paste(a1, "vs", a0),
+      NDE, NIE_GTE, NIE_DW_A, NIE_DW_B, NIE_joint, TE
+    )
+  })
+
+  results[[i]] <- eff
+}
+
+combined <- bind_rows(results)
+
+# ---- 5) Decomposition check: TE ≈ sum of parts ----------------
+check <- combined %>%
+  mutate(diff = TE - (NDE + NIE_GTE + NIE_DW_A + NIE_DW_B + NIE_joint)) %>%
+  group_by(comparison) %>%
+  summarise(mean_diff = mean(diff), max_abs_diff = max(abs(diff)), .groups = "drop")
+print(check)
+
+# ---- 6) Summaries (89% intervals) ----------------------------
+summary_df <- combined %>%
+  pivot_longer(c(NDE, NIE_GTE, NIE_DW_A, NIE_DW_B, NIE_joint, TE),
+               names_to = "effect", values_to = "value") %>%
+  group_by(comparison, effect) %>%
+  summarise(
+    mean  = mean(value),
+    lower = quantile(value, 0.055),  # 89% interval (central)
+    upper = quantile(value, 0.945),
+    prob_negative = mean(value < 0), # Negative = lower error = better accuracy
+    .groups = "drop"
+  )
+
+print(summary_df)
+
+```
+
+
+
+
+```{r}
+fit_Y_Full <- brm(
+  AbsolutError ~ Agent_Typef + GTE_median_adj + (1|SubjectID),
+  data = Merged_Data,
+  family = Gamma(link = "log"),    # matches your current pointing error models
+  prior = c(
+    prior(normal(0, 1), class = "b"),
+    prior(cauchy(0, 1), class = "sd")
+  ),
+  cores = 4, chains = 4, iter = 4000
+)
+
+```
+
+```{r}
+# --- Setup ---------------------------------------------------------------
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+
+set.seed(123)
+
+# IMPORTANT: This code assumes fit_M_Full and fit_Y_Full were fit WITHOUT an `Experiment` predictor.
+# (If your models include Experiment, you MUST pass it in newdata.)
+
+# Agent-type contrasts to compare (pooled model allows all three)
+contrasts <- list(
+  c("Acontextual","Congruent"),
+  c("Acontextual","Incongruent"),
+  c("Congruent","Incongruent")
+)
+
+# Figure out how many posterior draws are available and cap at 2000
+n_draws_M <- nrow(fitted(
+  fit_M_Full,
+  newdata = tibble(Agent_Typef = contrasts[[1]][1]),
+  re_formula = NA, summary = FALSE
+))
+n_draws_Y <- nrow(fitted(
+  fit_Y_Full,
+  newdata = tibble(Agent_Typef = contrasts[[1]][1], GTE_median_adj = 0.5),
+  re_formula = NA, summary = FALSE
+))
+n_draws <- min(2000L, n_draws_M, n_draws_Y)
+
+results <- vector("list", length(contrasts))
+
+# --- Main loop -----------------------------------------------------------
+for (i in seq_along(contrasts)) {
+  a0 <- contrasts[[i]][1]
+  a1 <- contrasts[[i]][2]
+  message("Processing: ", a1, " vs ", a0)
+
+  # Pre-compute mediator draws M(a0), M(a1) at the population level
+  m_a0_draws <- fitted(
+    fit_M_Full,
+    newdata = tibble(Agent_Typef = a0),
+    re_formula = NA, summary = FALSE
+  )[seq_len(n_draws), 1]
+
+  m_a1_draws <- fitted(
+    fit_M_Full,
+    newdata = tibble(Agent_Typef = a1),
+    re_formula = NA, summary = FALSE
+  )[seq_len(n_draws), 1]
+
+  # Draw-by-draw counterfactuals
+  effects <- map_dfr(seq_len(n_draws), function(d){
+
+    m_a0 <- m_a0_draws[d]
+    m_a1 <- m_a1_draws[d]
+
+    # Four potential outcomes on the response scale (population-level: re_formula = NA)
+    Y00 <- fitted(
+      fit_Y_Full,
+      newdata = tibble(Agent_Typef = a0, GTE_median_adj = m_a0),
+      re_formula = NA, summary = FALSE
+    )[d, 1]
+
+    Y10 <- fitted(
+      fit_Y_Full,
+      newdata = tibble(Agent_Typef = a1, GTE_median_adj = m_a0),
+      re_formula = NA, summary = FALSE
+    )[d, 1]
+
+    Y01 <- fitted(
+      fit_Y_Full,
+      newdata = tibble(Agent_Typef = a0, GTE_median_adj = m_a1),
+      re_formula = NA, summary = FALSE
+    )[d, 1]
+
+    Y11 <- fitted(
+      fit_Y_Full,
+      newdata = tibble(Agent_Typef = a1, GTE_median_adj = m_a1),
+      re_formula = NA, summary = FALSE
+    )[d, 1]
+
+    tibble(
+      .draw = d,
+      Y00 = Y00, Y10 = Y10, Y01 = Y01, Y11 = Y11
+    ) |>
+      mutate(
+        NDE     = Y10 - Y00,     # natural direct effect
+        NIE     = Y01 - Y00,     # natural indirect effect (canonical)
+        NIE_alt = Y11 - Y10,     # algebraically equivalent check
+        TE      = Y11 - Y00,     # total effect
+        comparison = paste(a1, "vs", a0)
+      )
+  })
+
+  results[[i]] <- effects
+}
+
+# --- Summaries -----------------------------------------------------------
+combined <- bind_rows(results)
+
+# Consistency check: NIE and NIE_alt should be ~equal (small MC differences are fine)
+check_df <- combined |>
+  transmute(comparison, diff = NIE - NIE_alt)
+check_summary <- check_df |>
+  group_by(comparison) |>
+  summarise(mean_diff = mean(diff), max_abs_diff = max(abs(diff)), .groups = "drop")
+print(check_summary)
+
+summary_df <- combined |>
+  pivot_longer(c(NIE, NDE, TE), names_to = "name", values_to = "value") |>
+  group_by(comparison, name) |>
+  summarise(
+    mean          = mean(value),
+    lower         = quantile(value, 0.025),
+    upper         = quantile(value, 0.975),
+    prob_positive = mean(value > 0),
+    prob_negative = mean(value < 0),
+    .groups = "drop"
+  )
+
+print(summary_df)
+
+# For Absolute Error (smaller = better), NEGATIVE effects mean improved accuracy for the first agent in `comparison`
+# relative to the second.
+```
+```{r}
+library(brms)
+library(dplyr)
+
+set.seed(123)
+options(contrasts = c("contr.sum","contr.poly"))
+
+# Ensure factors are set up
+Merged_Data <- Merged_Data %>%
+  mutate(
+    Agent_Typef    = factor(Agent_Typef,    levels = c("Acontextual","Congruent","Incongruent")),
+    ContextEffectf = factor(ContextEffectf, levels = c("Residential","Public"))
+  )
+
+# If GTE is strictly in (0,1); if some values hit 0/1, nudge them slightly
+eps <- 1e-6
+Merged_Data <- Merged_Data %>%
+  mutate(GTE_median_adj = ifelse(is.na(GTE_median_adj), NA_real_,
+                          pmin(pmax(GTE_median_adj, eps), 1 - eps)))
+
+# (A) Mediator / imputation model for GTE (has missing values)
+bf_M <- brms::bf(
+  GTE_median_adj | mi() ~ Agent_Typef + (1 | SubjectID),
+  family = brms::Beta()
+)
+
+# (B) Imputation model for dwell: agent
+bf_DW_A_imp <- brms::bf(
+  Dwelling_Time_Agent_Gaze_Centered | mi() ~
+    Agent_Typef + ContextEffectf + (1 | SubjectID),
+  family = Gamma(link = "log")
+)
+
+# (C) Imputation model for dwell: building
+bf_DW_B_imp <- brms::bf(
+  Dwelling_Time_Building_Gaze_Centered | mi() ~
+    Agent_Typef + ContextEffectf + (1 | SubjectID),
+  family = Gamma(link = "log")
+)
+
+# (D) Outcome model references the imputed versions via mi()
+bf_Y <- brms::bf(
+  AbsolutError ~ Agent_Typef +
+    mi(GTE_median_adj) +
+    ContextEffectf +
+    mi(Dwelling_Time_Building_Gaze_Centered) +
+    mi(Dwelling_Time_Agent_Gaze_Centered) +
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  family = Gamma(link = "log")
+)
+
+fit_mi <- brms::brm(
+  bf_M + bf_DW_A_imp + bf_DW_B_imp + bf_Y + brms::set_rescor(FALSE),
+  data = Merged_Data,
+  prior = c(
+    brms::prior(normal(0, 1), class = "b"),
+    brms::prior(cauchy(0, 1), class = "sd"),
+    brms::prior(exponential(1), class = "phi")  # Beta precision for bf_M
+  ),
+  chains = 4, cores = 4, iter = 4000, warmup = 1000,
+  save_pars = brms::save_pars(all = TRUE),
+  seed = 123
+)
+
+
+print(fit_mi)
+pp_check(fit_mi, resp = "AbsolutError", type = "dens_overlay", nsamples = 50)
+
+```
+```{r}
+# (A) Mediator model (no post-treatment covariates)
+bf_M <- bf(
+  GTE_median_adj ~ Agent_Typef + (1 | SubjectID),
+  family = Beta()
+)
+```
+
+
+```{r}
+# Mediator model with interaction
+fit_M_exp <- brm(
+  GTE_median_adj ~ Agent_Typef * Experiment + (1|SubjectID),
+  data = Merged_Data,
+  family = Beta(),
+  prior = c(
+    prior(normal(0, 1), class = "b"),
+    prior(cauchy(0, 1), class = "sd")
+  ),
+  cores = 4, chains = 4, iter = 4000
+)
+
+# Outcome model with interaction
+fit_Y_exp <- brm(
+  AbsolutError ~ Agent_Typef * Experiment + GTE_median_adj * Experiment + (1|SubjectID),
+  data = Merged_Data,
+  family = Gamma(link = "log"),
+  prior = c(
+    prior(normal(0, 1), class = "b"),
+    prior(cauchy(0, 1), class = "sd")
+  ),
+  cores = 4, chains = 4, iter = 4000
+)
+
+summary(fit_M_exp)
+summary(fit_Y_exp)
+
+```
+```{r}
+library(ggplot2)
+
+# Filter for Acontextual trials
+ac_data <- Merged_Data %>% filter(Agent_Typef == "Acontextual")
+
+ggplot(ac_data, aes(x = GTE_median_adj, fill = Experimentf)) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Distribution of GTE under Acontextual by Experiment",
+       x = "Adjusted GTE", y = "Density")
+
+```
+
+```{r}
+# Posterior predictive GTE for Acontextual in each experiment
+newdata_ac <- expand.grid(
+  Agent_Typef = "Acontextual",
+  Experiment = unique(Merged_Data$Experiment)
+)
+
+ppred_ac <- fitted(
+  fit_M_exp,
+  newdata = newdata_ac,
+  re_formula = NA,   # <- ignores SubjectID
+  summary = FALSE
+)
+
+
+# Convert to long format for plotting
+ppred_ac_df <- as.data.frame(ppred_ac)
+names(ppred_ac_df) <- paste("Experiment", unique(Merged_Data$Experiment))
+
+ppred_long <- ppred_ac_df %>%
+  mutate(draw = 1:n()) %>%
+  pivot_longer(-draw, names_to = "Experiment", values_to = "GTE_pred")
+
+ggplot(ppred_long, aes(x = GTE_pred, fill = Experiment)) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Posterior Predictive GTE for Acontextual by Experiment",
+       x = "Predicted GTE", y = "Density")
+
+```
+
+
+
+
+
+
+
+
+```{r}
+library(patchwork)
+conditional_effects(bayesian_performance_model_no_inter, effects = c(
+  "Dwelling_Time_Building_Gaze_Centered",
+  "Dwelling_Time_Agent_Gaze_Centered",
+  "median"
+)) %>%
+  plot(points = TRUE, plot = FALSE) %>%
+  patchwork::wrap_plots(ncol = 1) +
+  plot_annotation(title = "Marginal Effects of Continuous Predictors")
+
+```
+```{r}
+install.packages(c("broom.mixed", "dotwhisker"))
+library(broom.mixed)
+library(dotwhisker)
+
+```
+```{r}
+# Extract tidy coefficients from your model
+tidy_model <- broom.mixed::tidy(bayesian_performance_model_no_inter, effects = "fixed", conf.int = TRUE, conf.level = 0.95)
+
+# Quickly plot betas with credible intervals
+dotwhisker::dwplot(tidy_model) +
+  theme_bw() +
+  labs(title = "Regression Coefficient Estimates",
+       x = "Estimate (with 95% CI)",
+       y = "Predictors")
+
+```
+```{r}
+
+
+# Extract fixed effects estimates and credible intervals
+betas_df <- broom.mixed::tidy(bayesian_performance_model_no_inter, effects = "fixed", conf.int = TRUE, conf.level = 0.95)
+
+# Select and rename relevant columns clearly
+betas_clean <- betas_df[, c("term", "estimate", "conf.low", "conf.high")]
+colnames(betas_clean) <- c("Predictor", "Estimate", "CI_lower", "CI_upper")
+
+# Export as CSV
+write.csv(betas_clean, "/Volumes/TwoTeras/2_DataSets_Experiments_1_2/Plots/Performance_model_betas.csv", row.names = FALSE)
+
+```
+
+
+
+
+```{r}
+# Compute LOO for each model
+loo_no_int <- loo(bayesian_performance_model_no_inter)
+loo_int <- loo(bayesian_performance_model)
+
+# Compare the models
+loo_compare(loo_no_int, loo_int)
+```
+
+
+
+```{r}
+# Remove one predictor at a time
+model_no_Building <- update(bayesian_performance_model, formula = . ~ . - Dwelling_Time_Building_Gaze_Centered,  
+                                 cores = 4)
+model_no_Agent <- update(bayesian_performance_model, formula = . ~ . - Dwelling_Time_Agent_Gaze_Centered, 
+                                 cores = 4)
+model_no_Context <- update(bayesian_performance_model, formula = . ~ . - ContextEffectf, 
+                                 cores = 4)
+model_no_Median <- update(bayesian_performance_model, formula = . ~ . - median, 
+                                 cores = 4)
+```
+
+
+```{r}
+
+model_no_AgentTypeAcontextual_vs_Congruent <- update(bayesian_performance_model, formula = . ~ . - Agent_Typef2, 
+                                 cores = 4,
+                                newdata = Merged_Data)
+model_no_Agent_TypefAcontextual_vs_Incongruent <- update(bayesian_performance_model, formula = . ~ . - Agent_Typef3, 
+                                 cores = 4,
+                                newdata = Merged_Data)
+
+```
+
+
+```{r}
+
+
+# Compute marginal likelihoods using bridge sampling
+bridge_full <- bridge_sampler(bayesian_performance_model)
+bridge_Building <- bridge_sampler(model_no_Building)
+bridge_Agent <- bridge_sampler(model_no_Agent)
+bridge_Context <- bridge_sampler(model_no_Context)
+bridge_model_no_AgentTypeAcontextual_vs_Congruent <- bridge_sampler(model_no_AgentTypeAcontextual_vs_Congruent)
+bridge_model_no_AgentTypeAcontextual_vs_Incongruent <- bridge_sampler(model_no_Agent_TypefAcontextual_vs_Incongruent)
+bridge_Median <- bridge_sampler(model_no_Median)
+
+```
+```{r}
+# Compute Bayes Factors (BF) against the full model
+bf_Building <- bf(bridge_full, bridge_Building)
+bf_Agent <- bf(bridge_full, bridge_Agent)
+bf_Context <- bf(bridge_full, bridge_Context)
+bf_Median <- bf(bridge_full, bridge_Median)
+bf_AgentTypeAcontextual_vs_Congruent <- bf(bridge_full, bridge_model_no_AgentTypeAcontextual_vs_Congruent)
+bf_AgentTypeAcontextual_vs_Incongruent <- bf(bridge_full, bridge_model_no_AgentTypeAcontextual_vs_Incongruent)
+
+```
+
+```{r}
+# Print Bayes Factor results
+print(bf_Building)
+print(bf_Agent)
+print(bf_Context)
+print(bf_AgentTypeAcontextual_vs_Congruent)
+print(bf_AgentTypeAcontextual_vs_Incongruent)
+print(bf_Median)
+
+```
+
+```{r}
+# Create a dataframe for Bayes Factors with updated predictor labels
+bf_data <- data.frame(
+  Predictor = c("Building Type", "Dwell on Building", "Agent Congruent","Agent Incongruent", "Entropy", "Dwell Agent"),  
+  BayesFactor = c(as.numeric(bf_Context$bf), as.numeric(bf_Building$bf), as.numeric(bf_AgentTypeAcontextual_vs_Congruent$bf), 
+                  as.numeric(bf_AgentTypeAcontextual_vs_Incongruent$bf), as.numeric(bf_Median$bf), as.numeric(bf_Agent$bf))
+)
+
+# Log transform for readability
+bf_data$LogBF <- log10(bf_data$BayesFactor)
+
+# Classify evidence strength
+bf_data$Category <- ifelse(bf_data$BayesFactor > 30, "Strong Evidence",
+                        ifelse(bf_data$BayesFactor > 3, "Moderate Evidence",
+                        ifelse(bf_data$BayesFactor > 1, "Weak Evidence", "Against Inclusion")))
+
+
+
+```
+```{r}
+
+# Create a bar plot with the updated y-axis tick labels
+ggplot(bf_data, aes(x = reorder(Predictor, LogBF), y = LogBF, fill = Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(BayesFactor, 2)), hjust = 1.2, color = "white", size = 4) +
+  scale_fill_manual(values = c("Strong Evidence" = "darkred", "Moderate Evidence" = "orange",
+                               "Weak Evidence" = "yellow", "Against Inclusion" = "blue")) +
+  labs(title = "Bayes Factors for Predictors",
+       subtitle = "Log-transformed Bayes Factors (BF > 1 favors inclusion, BF < 1 favors exclusion)",
+       x = "Predictor",
+       y = "Log10(Bayes Factor)") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes for readability
+
+
+```
+```{r}
+# Example using ggplot2 to visualize the distribution of absolute error by Agent_Typef
+
+library(ggplot2)
+
+ggplot(Merged_Data, aes(x = Agent_Typef, y = AbsolutError)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(x = "Agent Type",
+       y = "Absolute Pointing Error (ε)",
+       title = "Distribution of Absolute Pointing Error by Agent Type") +
+  theme_minimal()
+
+```
+```{r}
+
+# Get the conditional effects for Agent_Typef
+ce <- conditional_effects(bayesian_performance_model, effects = "Agent_Typef")
+
+# Basic plot using brms' built-in plotting function:
+plot(ce, ask = FALSE)
+
+# Alternatively, to customize the plot using ggplot2:
+ce_data <- as.data.frame(ce$Agent_Typef)
+ggplot(ce_data, aes(x = Agent_Typef, y = estimate__)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = lower__, ymax = upper__), width = 0.2) +
+  labs(x = "Agent Type",
+       y = "Predicted Absolute Error",
+       title = "Model Predicted Means for Agent_Typef") +
+  theme_minimal()
+
+```
+```{r}
+ce <- conditional_effects(bayesian_performance_model, "Agent_Typef")
+ce_data <- as.data.frame(ce$Agent_Typef)
+head(ce_data)
+
+```
+
+
+
+```{r}
+
+bayesian_performance_model_interaction <- brm(
+  AbsolutError ~ Dwelling_Time_Building_Gaze_Centered + Dwelling_Time_Agent_Gaze_Centered +
+    ContextEffectf + Agent_Action_levelf + Matchf*median + 
+    (1 | SubjectID) + (1 | PointingTaskStartingLocations),
+  data = Merged_Data,
+  family = Gamma(link = "log"),  # Use lognormal or another appropriate family
+  cores = 4, chains = 4, iter = 4000, warmup = 1000,
+  save_pars = save_pars(all = TRUE)
+)
+```
+
+```{r}
+# Remove one predictor at a time and specify all 4 cores
+model_no_BuildingInter <- update(bayesian_performance_model_interaction, 
+                                 formula = . ~ . - Dwelling_Time_Building_Gaze_Centered, 
+                                 cores = 4)
+
+model_no_AgentInter <- update(bayesian_performance_model_interaction, 
+                              formula = . ~ . - Dwelling_Time_Agent_Gaze_Centered, 
+                              cores = 4)
+
+model_no_ContextInter <- update(bayesian_performance_model_interaction, 
+                                formula = . ~ . - ContextEffectf, 
+                                cores = 4)
+
+model_no_AgentActionInter <- update(bayesian_performance_model_interaction, 
+                                    formula = . ~ . - Agent_Action_levelf, 
+                                    cores = 4)
+
+model_no_MatchInter <- update(bayesian_performance_model_interaction, 
+                              formula = . ~ . - Matchf, 
+                              cores = 4)
+
+model_no_MedianInter <- update(bayesian_performance_model_interaction, 
+                               formula = . ~ . - median, 
+                               cores = 4)
+# Remove one predictor at a time, now also removing the interaction term
+model_no_InteractionInter <- update(bayesian_performance_model_interaction, 
+                                    formula = . ~ . - MatchfCongruent:median, 
+                                    cores = 4)
+
+
+
+```
+```{r}
+model_no_InteractionInter <- update(bayesian_performance_model_interaction, 
+                                    formula = . ~ . - MatchfCongruent:median, 
+                                    newdata = Merged_Data,  # Ensures data is explicitly provided
+                                    cores = 4)
+
+```
+
+```{r}
+
+
+# Compute marginal likelihoods for full and reduced models
+bridge_fullInter <- bridge_sampler(bayesian_performance_model_interaction)
+
+bridge_BuildingInter <- bridge_sampler(model_no_BuildingInter)
+bridge_AgentInter <- bridge_sampler(model_no_AgentInter)
+bridge_ContextInter <- bridge_sampler(model_no_ContextInter)
+bridge_AgentActionInter <- bridge_sampler(model_no_AgentActionInter)
+bridge_MatchInter <- bridge_sampler(model_no_MatchInter)
+bridge_MedianInter <- bridge_sampler(model_no_MedianInter)
+bridge_InteractionInter <- bridge_sampler(model_no_InteractionInter)  # New: removes interaction
+
+# Compute Bayes Factors for each predictor including the interaction term
+bf_BuildingInter <- bf(bridge_fullInter, bridge_BuildingInter)
+bf_AgentInter <- bf(bridge_fullInter, bridge_AgentInter)
+bf_ContextInter <- bf(bridge_fullInter, bridge_ContextInter)
+bf_AgentActionInter <- bf(bridge_fullInter, bridge_AgentActionInter)
+bf_MatchInter <- bf(bridge_fullInter, bridge_MatchInter)
+bf_MedianInter <- bf(bridge_fullInter, bridge_MedianInter)
+bf_InteractionInter <- bf(bridge_fullInter, bridge_InteractionInter)  # New: interaction term
+
+# Print results
+print(bf_BuildingInter)
+print(bf_AgentInter)
+print(bf_ContextInter)
+print(bf_AgentActionInter)
+print(bf_MatchInter)
+print(bf_MedianInter)
+print(bf_InteractionInter)  # New: prints interaction BF
+
+
+```
+
+```{r}
+# Create a dataframe for Bayes Factors using interaction models
+bf_data_inter <- data.frame(
+  Predictor = c("Building_Gaze", "Agent_Gaze", "ContextEffect", "Agent_Action", "Match", "Median", "Match × Median Interaction"),
+  BayesFactor = c(as.numeric(bf_BuildingInter$bf), as.numeric(bf_AgentInter$bf), 
+                  as.numeric(bf_ContextInter$bf), as.numeric(bf_AgentActionInter$bf), 
+                  as.numeric(bf_MatchInter$bf), as.numeric(bf_MedianInter$bf),
+                  as.numeric(bf_InteractionInter$bf))  # New: interaction term
+)
+
+# Log transform for readability
+bf_data_inter$LogBF <- log10(bf_data_inter$BayesFactor)
+
+# Classify evidence strength
+bf_data_inter$Category <- ifelse(bf_data_inter$BayesFactor > 30, "Strong Evidence",
+                               ifelse(bf_data_inter$BayesFactor > 3, "Moderate Evidence",
+                               ifelse(bf_data_inter$BayesFactor > 1, "Weak Evidence", "Against Inclusion")))
+
+# Plot Bayes Factors
+library(ggplot2)
+
+ggplot(bf_data_inter, aes(x = reorder(Predictor, LogBF), y = LogBF, fill = Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(BayesFactor, 2)), hjust = 1.2, color = "white", size = 4) +
+  scale_fill_manual(values = c("Strong Evidence" = "darkred", "Moderate Evidence" = "orange",
+                               "Weak Evidence" = "yellow", "Against Inclusion" = "blue")) +
+  labs(title = "Bayes Factors for Interaction Model Predictors",
+       subtitle = "Log-transformed Bayes Factors (BF > 1 favors inclusion, BF < 1 favors exclusion)",
+       x = "Predictor",
+       y = "Log10(Bayes Factor)") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes for readability
+
+
+```
+
+```{r}
+
+
+ggplot(bf_data_inter, aes(x = reorder(Predictor, LogBF), y = LogBF, fill = Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(BayesFactor, 2)), hjust = 1.2, color = "white", size = 4) +
+  scale_fill_manual(values = c("Strong Evidence" = "darkred", "Moderate Evidence" = "orange",
+                               "Weak Evidence" = "yellow", "Against Inclusion" = "blue")) +
+  labs(title = "Bayes Factors for Interaction Model Predictors",
+       subtitle = "Log-transformed Bayes Factors (BF > 1 favors inclusion, BF < 1 favors exclusion)",
+       x = "Predictor",
+       y = "Log10(Bayes Factor)") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes for readability
+
+```
+
+
+
+
+
+
+```{r}
+library(bayestestR)
+
+# Compute Bayes Factors for all predictors
+bf_results <- bayesfactor_parameters(bayesian_performance_model)
+
+# Print results
+print(bf_results)
+
+```
+
+```{r}
+contrast_matrix_pairwise <- matrix(
+  c(-0.5, -0.5,  0.0,   # Acontextual
+     0.5,  0.0, -0.5,   # Congruent
+     0.0,  0.5,  0.5),  # Incongruent
+  ncol = 3,
+  byrow = TRUE
+)
+
+rownames(contrast_matrix_pairwise) <- c("Acontextual", "Congruent", "Incongruent")
+colnames(contrast_matrix_pairwise) <- c("Congruent_vs_Acontextual", "Incongruent_vs_Acontextual", "Congruent_vs_Incongruent")
+
+contrasts(Merged_Data$Agent_Typef) <- contrast_matrix_pairwise
+
+```
+
+
+
+
+
+

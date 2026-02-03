@@ -1,0 +1,879 @@
+---
+title: "General mixed linear models"
+author: "Tracy Sánchez"
+date: "Última actualización: `r format(Sys.Date(), format = '%d %B %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+    toc_depth: 6
+    mathjax: null
+    css: doc.css # To set style to maximum in a separate file
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment = NA) # To delete all hashtags from output in HTML 
+library(readr);library(dlookr);library(dplyr);
+library(lme4);library(car);library(emmeans);library(MASS);library(jtools);
+library(lmerTest);library(gmodels);library(nlme); library(multcompView);
+library(ggplot2)
+library(sjPlot)
+library(sjstats)
+emm_options(lmerTest.limit = 10000)
+emm_options(pbkrtest.limit = 10000)
+```
+
+# Loading Data 
+
+```{r echo = FALSE,warning = FALSE }
+HumanA <- read.csv("/Volumes/TwoTeras/2_DataSets_Experiments_1_2/humanA_Behavioural_Building.csv", sep =",")
+unique(HumanA$ID)
+```
+
+
+
+Here we take out all the participants that do not have a complete set of eyetracking data 
+```{r echo = FALSE,warning = FALSE }
+#HumanA <- HumanA %>% dplyr::filter(!ID %in% c(4580, 3540))
+```
+
+# Recoding for effects and formating factors 
+```{r }
+
+HumanA$ContextEffectf <-dplyr::recode(HumanA$BuildingCategory_Building, 
+                                      Residential = -0.5, Public= 0.5,
+                                      .default = NaN)
+HumanA$AgentPresence <-dplyr::recode(HumanA$AvatarPresenceCategory_Building,
+                                             Omitted = -0.5, Present= 0.5,
+                                             .default = NaN)
+HumanA$Agent_Action_level <-dplyr::recode(HumanA$Agent_Action_level,
+                                             Passive = -0.5, Active= 0.5,
+                                             .default = NaN)
+HumanA$ContextEffectf <-factor(HumanA$ContextEffectf,levels= c(-0.5, 0.5), 
+                               labels=c('Residential', 'Public')) 
+HumanA$AgentPresencef <-factor(HumanA$AgentPresence,
+                                levels= c(-0.5, 0.5), 
+                                labels=c('Omitted', 'Displayed'))
+HumanA$Agent_Action_levelf <-factor(HumanA$Agent_Action_level,
+                                levels= c(-0.5, 0.5), 
+                                labels=c('Passive', 'Active'))
+                                            
+```
+# Data descriptives
+```{r}
+MainVariables <- subset(HumanA, select = c(AbsolutError_Building, RT_Building))
+summary(MainVariables)
+```
+
+```{r}
+summary(HumanA$AgentPresence)
+```
+
+
+```{r}
+df = HumanA[complete.cases(HumanA),]
+
+ggplot(df,aes(x=AbsolutError_Building,group=Agent_Action_levelf,fill=Agent_Action_levelf))+
+  geom_histogram(position="identity",alpha=0.5,binwidth=10)+  facet_grid(cols = vars(ContextEffectf))+theme_bw()
+```
+```{r}
+target_ids <- c("5743", "6406", "5189", "9297", "7081", "5766", "1031", "4598", "4847", "8629", "9627", "5972", "7935", "4580", "1843", "5851", "5161", "1268", "1574", "4875", "7823", "1754", "2258", "2693", "3310", "4176", "4796", "4917", "5238", "5741", "6642", "7093", "7412", "7842", "8007", "8469", "8673", "8695", "9472", "9502", "9601", "365", "4597", "9586")
+filtered_data <- df[df$ID %in% target_ids,]
+```
+
+
+```{r }
+library(dplyr)
+TwoFactorTable <- HumanA %>% 
+  group_by(ContextEffectf, Agent_Action_levelf)%>%
+  summarise(AccuracyMean = mean(AbsolutError_Building, na.rm = TRUE),
+            n=n(),
+            AccuracyStandardDev = sd(AbsolutError_Building, na.rm = TRUE),
+            RTMean = mean(RT_Building, na.rm = TRUE),
+            RTStandardDev = sd(RT_Building, na.rm = TRUE))
+library(tidyr)
+TwoFactorTableUnite <- TwoFactorTable %>%
+  unite("TwoFactor", ContextEffectf:Agent_Action_levelf, sep= " ", remove = F)
+  
+TwoFactorTableUnite <-  TwoFactorTableUnite %>%
+  mutate( AccuracyStandardError=AccuracyStandardDev/sqrt(n)) %>%  
+  mutate( AccuracyStandardIC=AccuracyStandardDev * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate( RTStandardError=RTStandardDev/sqrt(n)) 
+
+
+ThreeFactorTable <- HumanA %>% 
+  group_by(ContextEffectf, AgentPresencef, Agent_Action_levelf)%>%
+  summarise(AccuracyMean = mean(AbsolutError_Building, na.rm = TRUE),
+            n=n(),
+            AccuracyStandardDev = sd(AbsolutError_Building, na.rm = TRUE),
+            RT_BuildingMean = mean(RT_Building, na.rm = TRUE),
+            RTStandardDev = sd(RT_Building, na.rm = TRUE))
+
+ThreeFactorTableUnite <- ThreeFactorTable %>%
+  unite("ThreeFactor", ContextEffectf:AgentPresencef, sep= " ", remove = F)
+  
+ThreeFactorTableUnite <-  ThreeFactorTableUnite %>%
+  mutate( AccuracyStandardError=AccuracyStandardDev/sqrt(n)) %>%  
+  mutate( AccuracyStandardIC=AccuracyStandardDev * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate( RTStandardError=RTStandardDev/sqrt(n)) 
+ThreeFactorTableUnite <-ThreeFactorTableUnite  %>% drop_na()
+```
+
+```{r echo=FALSE}
+# Response Time 
+legend_title <- "Human agent category"
+RT <- ggplot(data = subset(ThreeFactorTableUnite, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = RT_BuildingMean,
+                  group = Agent_Action_levelf))
+
+RT + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = RT_BuildingMean - RTStandardError, 
+                    ymax = RT_BuildingMean + RTStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  facet_grid(cols = vars(AgentPresencef)) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0)) +
+  ylab("Response Time in seconds") +
+  xlab("Location") +
+  ggtitle("Response time:",
+          subtitle = "The effects of location, agent category, and presence") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"))
+
+###################################################################################################
+
+RT_two <- ggplot(data = subset(TwoFactorTableUnite, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = RTMean,
+                  group = Agent_Action_levelf))
+
+RT_two + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = RTMean - RTStandardError, 
+                    ymax = RTMean + RTStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  theme_bw() +
+   theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0)) +
+  ylab("Response Time in seconds") +
+  xlab("Location") +
+  ggtitle("Response time:",
+          subtitle = "The effects of location and agent category") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"),
+       linetype = legend_title,
+       shape = legend_title)
+
+```
+```{r }
+Acc <- ggplot(data = subset(ThreeFactorTableUnite, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = AccuracyMean,
+                  group = Agent_Action_levelf))
+
+Acc + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = AccuracyMean - AccuracyStandardError, 
+                    ymax = AccuracyMean + AccuracyStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  facet_grid(cols = vars(AgentPresencef)) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0))  +
+  ylab("Average absolute angular error in degrees") +
+  xlab("Location") +
+  ggtitle("Accuracy performance",
+          subtitle = "The effects of location, agent category, and presence") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"))
+#############################################################################################
+
+Acc_two <- ggplot(data = subset(TwoFactorTableUnite, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = AccuracyMean,
+                  group = Agent_Action_levelf))
+
+Acc_two + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = AccuracyMean - AccuracyStandardError, 
+                    ymax = AccuracyMean + AccuracyStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"))  +
+  ylab("Average absolute angular error in degrees") +
+  xlab("Location") +
+  ggtitle("Accuracy performance",
+          subtitle = "The effects of location and agent category") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"))
+
+```
+
+```{r echo=FALSE}
+# Response Time 
+legend_title <- "Human agent category"
+RT <- ggplot(data = subset(ThreeFactorTableUnite, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = RT_BuildingMean,
+                  group = Agent_Action_levelf))
+
+RT + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = RT_BuildingMean - RTStandardError, 
+                    ymax = RT_BuildingMean + RTStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  facet_grid(cols = vars(AgentPresencef)) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0))  +
+  ylab("Response Time in seconds") +
+  xlab("Location") +
+  ggtitle("Response time:",
+          subtitle = "The effects of location, agent category, and presence") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"),
+       linetype = legend_title,
+       shape = legend_title)
+
+###################################################################################################
+
+RT_two <- ggplot(data = subset(TwoFactorTableUnite, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = RTMean,
+                  group = Agent_Action_levelf))
+
+RT_two + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = RTMean - RTStandardError, 
+                    ymax = RTMean + RTStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0))  +
+  ylab("Response Time in seconds") +
+  xlab("Location") +
+  ggtitle("Response time:",
+          subtitle = "The effects of location and agent category") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"),
+       linetype = legend_title,
+       shape = legend_title)
+
+
+```
+
+
+
+
+
+## Checking for the distribution of Absolut error
+```{r warning = FALSE }
+df = HumanA[complete.cases(HumanA),]
+df$AbsolutErrorR <- round(df$AbsolutError, digits = 3)
+qqp(df$AbsolutErrorR, "norm")
+qqp(df$AbsolutErrorR, "lnorm")
+```
+
+
+```{r warning = FALSE }
+n_distinct(df$ID)
+# Set up contrast to sum zero A.K.A compare each level equally
+contrasts(df$ContextEffectf) <- "contr.sum"
+contrasts(df$AgentPresencef) <- "contr.sum"
+contrasts(df$Agent_Action_levelf) <- "contr.sum"
+
+```
+
+```{r}
+target_ids <- c("5743", "6406", "5189", "9297", "7081", "5766", "1031", "4598", "4847", "8629", "9627", "5972", "7935", "4580", "1843", "5851", "5161", "1268", "1574", "4875", "7823", "1754", "2258", "2693", "3310", "4176", "4796", "4917", "5238", "5741", "6642", "7093", "7412", "7842", "8007", "8469", "8673", "8695", "9472", "9502", "9601", "365", "4597", "9586")
+filtered_data <- df[df$ID %in% target_ids,]
+```
+
+
+# Linear mixed models
+
+## Assessing the need for a multilevel model
+
+Here we choose a crossed random model effect because all pointing locations repeat on the subject level, here we specified the ID of the location itself and not the order in which the subjects were exposed to them. 
+
+```{r}
+iinterceptOnly <-gls(AbsolutError_Building ~ 1, data = df, 
+                    method = "ML")
+IDrandomInterceptOnly <-lmer(AbsolutError_Building~ 1 + (1|ID), data = df)
+StartlocationsrandomIntercept <-lmer(AbsolutError_Building ~ 1 + (1|ID) + (1|PointingTaskStartingLocations_Building), data = filtered_data)
+```
+Including Id and starting position as random effects significantly improves the fit of the model 
+
+## Absolut Error Models
+
+
+```{r}
+TwofactorInteraction_P <-update(StartlocationsrandomIntercept, .~. + AgentPresencef + ContextEffectf*Agent_Action_levelf)
+summary(TwofactorInteraction_P)
+#Anova(TwofactorInteraction_P)
+#Pairwise<- emmeans(TwofactorInteraction_P, pairwise ~ ContextEffectf*Agent_Action_levelf)
+#Pairwise
+#plot(Pairwise[[2]], CIs = TRUE)
+tab_model(TwofactorInteraction_P, pred.labels=c("Intercept","Agent presence in task stimuli", "Location context (Public vs. Residential)", "Agent category (Active vs. Passive)", "Location x Agente category"))
+```
+```{r}
+library(glmmTMB)
+library(sjPlot)
+plot_model(TwofactorInteraction_P, type="re")
+plot_model(TwofactorInteraction_P, type="est", legend_title = "Custom Legend Title")
+plot_model(TwofactorInteraction_P, type="pred")
+plot_model(TwofactorInteraction_P, type="int", mdrt.values = "quart")
+```
+```{r}
+
+plot_model(TwofactorInteraction_P, show.values = TRUE, value.offset = .3, axis.labels = c("Location * Agent category","Agent category (Active vs Passive)","Location (Public vs. Residential) ", "Agent presence on the task stimuli"), title = "LMM predictor estimates for absolute angular error", colors="bw",  vline.color = "red")
+```
+
+
+
+```{r}
+means_12 <- lsmeans(TwofactorInteraction_P, ~  ContextEffectf * Agent_Action_levelf)
+means_just_active <- lsmeans(TwofactorInteraction_P, ~  Agent_Action_levelf) 
+```
+```{r}
+# To convert from lsmeans output 
+
+d <- data.frame(means_12)
+
+
+ggplot(data = d,aes(x = ContextEffectf, y = lsmean, group = Agent_Action_levelf)) +
+geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = lsmean - SE, ymax = lsmean + SE),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0)) +
+  ylab("Estimated marginal means for absolute angular error") +
+  xlab("Location") +
+  ggtitle("Estimated marginal means:",
+          subtitle = "The location and agent categories interaction") +
+  labs(caption = paste0("Error bars indicate one one standard errors associated with each estimated marginal mean \n"),
+       linetype = legend_title,
+       shape = legend_title)
+```
+
+### Interaction plus presence
+
+```{r}
+AgentPresence <-update(TwofactorInteraction, .~. + AgentPresencef)
+summary(AgentPresence)
+Anova(AgentPresence, test.statistic="F", type=3)
+```
+### Three way interactions
+
+```{r}
+AllInteractions <-update(StartlocationsrandomIntercept, .~. + ContextEffectf*Agent_Action_levelf*AgentPresencef)
+summary(AllInteractions)
+Anova(AllInteractions)
+```
+
+
+### Model selections, most likely we will keep Two factor interaction plus presence
+
+```{r}
+anova( IDrandomInterceptOnly, StartlocationsrandomIntercept, 
+       AgentActive, MeaningfulContext, TwofactorInteraction, AgentPresence)
+```
+### Standardized residuals of the models
+```{r}
+plot(TwofactorInteraction, which = 1)
+plot(MeaningfulContext, which = 1)
+```
+### General linear models using a log link link function on an assumed gaussian distribution
+
+```{r}
+GHQ <- glmer(AbsolutError_Building ~  ContextEffectf*AgentPresencef + (1|ID), data = HumanA,family=gaussian(link = "log"), nAGQ = 25)  
+summary(GHQ)
+Anova(GHQ)
+anova(GHQ)
+emmeans(GHQ, pairwise ~ ContextEffectf:AgentPresencef, type = "response")
+```
+### Residual of the GLM with a gaussian link function
+
+```{r}
+plot(fitted(GHQ), residuals(GHQ), xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, lty = 2)
+lines(smooth.spline(fitted(GHQ), residuals(GHQ)))
+```
+### Manually log transforming the absolut error
+```{r}
+interceptOnly <-gls(log(AbsolutError_Building) ~ 1, data = df, 
+                    method = "ML")
+IDrandomInterceptOnly <-lmer(log(AbsolutError_Building) ~ 1 + (1|ID), data = df)
+StartlocationsrandomIntercept <-lmer(log(AbsolutError_Building) ~ 1 + (1|ID) + (1|PointingTaskStartingLocations_Building), data = df)
+MeaningfulContext <-update(StartlocationsrandomIntercept, .~. + ContextEffectf)
+AgentActive <-update(StartlocationsrandomIntercept, .~. + Agent_Action_levelf)
+TwofactorInteraction <-update(StartlocationsrandomIntercept, .~. + ContextEffectf*Agent_Action_levelf)
+summary(TwofactorInteraction)
+Anova(TwofactorInteraction)
+AgentPresence <-update(TwofactorInteraction, .~. + AgentPresencef)
+summary(AgentPresence)
+Anova(AgentPresence)
+Pairwise<- emmeans(TwofactorInteraction, pairwise ~ ContextEffectf*Agent_Action_levelf, type='response')
+Pairwise 
+plot(Pairwise[[2]])
+anova(IDrandomInterceptOnly, StartlocationsrandomIntercept, 
+      MeaningfulContext, TwofactorInteraction )
+plot(TwofactorInteraction, which = 1)
+```
+
+## Response Time models 
+### Checking for the distribution of RT
+
+```{r warning = FALSE }
+df = HumanA[complete.cases(HumanA),]
+df$RTr <- round(df$RT_Building, digits = 3)
+qqp(df$RT_Building, "norm")
+qqp(df$RT_Building, "lnorm")
+```
+
+```{r}
+
+interceptOnlyt <-gls(log(RTr) ~ 1, data = df, 
+                    method = "ML")
+IDrandomInterceptOnlyt <-lmer(log(RTr) ~ 1 + (1|ID), data = df)
+TrialIDrandomInterceptt <-lmer(log(RTr) ~ 1 + (1|TrialNumber_Building) + (1|ID), data = df)
+
+```
+
+```{r}
+
+TwofactorInteraction_P_T <-update(TrialIDrandomInterceptt, .~. + AgentPresencef + ContextEffectf*Agent_Action_levelf)
+summary(TwofactorInteraction_P_T)
+Anova(TwofactorInteraction_P_T)
+Pairwise<- emmeans(TwofactorInteraction_P_T, pairwise ~ ContextEffectf*Agent_Action_levelf)
+Pairwise
+plot(Pairwise[[2]], CIs = TRUE)
+```
+```{r}
+library(glmmTMB)
+library(sjPlot)
+plot_model(TwofactorInteraction_P_T, type="re")
+plot_model(TwofactorInteraction_P_T, type="est", legend_title = "Custom Legend Title")
+plot_model(TwofactorInteraction_P_T, type="pred")
+plot_model(TwofactorInteraction_P_T, type="int", mdrt.values = "quart")
+```
+
+```{r}
+plot_model(TwofactorInteraction_P_T, show.values = TRUE, value.offset = .3, axis.labels = c("Location * Agent category","Agent category (Active vs Passive)","Location (Public vs. Residential) ", "Agent presence on the task stimuli"), title = "LMM predictor estimates for response time", colors="bw",  vline.color = "red")
+```
+```{r}
+means_2_T <- lsmeans(TwofactorInteraction_P_T, ~  ContextEffectf * Agent_Action_levelf)
+means_just_active2_T <- lsmeans(TwofactorInteraction_P_T, ~  Agent_Action_levelf) 
+```
+
+
+```{r}
+# To convert from lsmeans output 
+d <- data.frame(means_2_T)
+
+
+ggplot(data = d,aes(x = ContextEffectf, y = lsmean, group = Agent_Action_levelf)) +
+geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = lsmean - SE, ymax = lsmean + SE),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+theme_bw() +
+theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0)) +
+  ylab("Estimated marginal means for response time") +
+  xlab("Location") +
+  ggtitle("Estimated marginal means:",
+          subtitle = "The location and agent categories interaction") +
+  labs(caption = paste0("Error bars indicate one one standard errors associated with each estimated marginal mean \n"),
+       linetype = legend_title,
+       shape = legend_title)
+```
+```{r}
+HumanA_Agent <- read.csv("/Volumes/TwoTeras/1_Experiment_2/Eye_Tracking/Pre_processed/Data_Sets/AgentData_Fixations_Wide.csv", sep =",")
+unique(HumanA_Agent$SubjectID)
+```
+```{r}
+#HumanA_Agent <- HumanA_Agent %>% dplyr::filter(!SubjectID %in% c(4580, 3540))
+HumanA_Agent$ContextEffectf <-dplyr::recode(HumanA_Agent$BuildingCategory, 
+                                      Residential = -0.5, Public= 0.5,
+                                      .default = NaN)
+HumanA_Agent$AgentPresence <-dplyr::recode(HumanA_Agent$AvatarPresenceCategory,
+                                             Omitted = -0.5, Present= 0.5,
+                                             .default = NaN)
+HumanA_Agent$Agent_Action_level <-dplyr::recode(HumanA_Agent$AgentCategory,
+                                             Passive = -0.5, Active= 0.5,
+                                             .default = NaN)
+HumanA_Agent$ContextEffectf <-factor(HumanA_Agent$ContextEffectf,levels= c(-0.5, 0.5), 
+                               labels=c('Residential', 'Public')) 
+HumanA_Agent$AgentPresencef <-factor(HumanA_Agent$AgentPresence,
+                                levels= c(-0.5, 0.5), 
+                                labels=c('Omitted', 'Displayed'))
+HumanA_Agent$Agent_Action_levelf <-factor(HumanA_Agent$Agent_Action_level,
+                                levels= c(-0.5, 0.5), 
+                                labels=c('Passive', 'Active'))
+```
+# Data descriptives
+```{r}
+MainVariables_Agent <- subset(HumanA_Agent, select = c(AbsolutError, RT))
+summary(MainVariables_Agent)
+```
+
+```{r}
+summary(HumanA_Agent$AgentPresencef)
+```
+
+
+```{r}
+df_Agent = HumanA_Agent[complete.cases(HumanA_Agent),]
+
+ggplot(df_Agent,aes(x=AbsolutError,group=Agent_Action_levelf,fill=Agent_Action_levelf))+
+  geom_histogram(position="identity",alpha=0.5,binwidth=10)+  facet_grid(cols = vars(ContextEffectf))+theme_bw()
+```
+```{r}
+TwoFactorTable_Agent <- HumanA_Agent %>% 
+  group_by(ContextEffectf, Agent_Action_levelf)%>%
+  summarise(AccuracyMean = mean(AbsolutError, na.rm = TRUE),
+            n=n(),
+            AccuracyStandardDev = sd(AbsolutError, na.rm = TRUE),
+            RTMean = mean(RT, na.rm = TRUE),
+            RTStandardDev = sd(RT, na.rm = TRUE))
+TwoFactorTable_Agent
+```
+
+```{r }
+
+TwoFactorTable_Agent <- HumanA_Agent %>% 
+  group_by(ContextEffectf, Agent_Action_levelf)%>%
+  summarise(AccuracyMean = mean(AbsolutError, na.rm = TRUE),
+            n=n(),
+            AccuracyStandardDev = sd(AbsolutError, na.rm = TRUE),
+            RTMean = mean(RT, na.rm = TRUE),
+            RTStandardDev = sd(RT, na.rm = TRUE))
+library(tidyr)
+TwoFactorTableUnite_Agent <- TwoFactorTable_Agent %>%
+  unite("TwoFactor", ContextEffectf:Agent_Action_levelf, sep= " ", remove = F)
+  
+TwoFactorTableUnite_Agent <-  TwoFactorTableUnite_Agent %>%
+  mutate( AccuracyStandardError=AccuracyStandardDev/sqrt(n)) %>%  
+  mutate( AccuracyStandardIC=AccuracyStandardDev * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate( RTStandardError=RTStandardDev/sqrt(n)) 
+```
+```{r}
+RT_two <- ggplot(data = subset(TwoFactorTableUnite_Agent, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = RTMean,
+                  group = Agent_Action_levelf))
+
+RT_two + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = RTMean - RTStandardError, 
+                    ymax = RTMean + RTStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  theme_bw() +
+   theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0)) +
+  ylab("Response Time in seconds") +
+  xlab("Location") +
+  ggtitle("Response time:",
+          subtitle = "The effects of location and agent category") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"),
+       linetype = legend_title,
+       shape = legend_title)
+
+Acc_two_Agent <- ggplot(data = subset(TwoFactorTableUnite_Agent, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = AccuracyMean,
+                  group = Agent_Action_levelf))
+
+Acc_two_Agent + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = AccuracyMean - AccuracyStandardError, 
+                    ymax = AccuracyMean + AccuracyStandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0))  +
+  ylab("Average absolute angular error in degrees") +
+  xlab("Location") +
+  ggtitle("Accuracy performance",
+          subtitle = "The effects of location and agent category") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"),
+       linetype = legend_title,
+       shape = legend_title)
+```
+## Checking for the distribution of Absolut error
+```{r warning = FALSE }
+df_Agent = HumanA_Agent[complete.cases(HumanA_Agent),]
+df_Agent$AbsolutErrorR <- round(df_Agent$AbsolutError, digits = 3)
+qqp(df_Agent$AbsolutErrorR, "norm")
+qqp(df_Agent$AbsolutErrorR, "lnorm")
+
+# Set up contrast to sum zero A.K.A compare each level equally
+contrasts(df_Agent$ContextEffectf) <- "contr.sum"
+contrasts(df_Agent$AgentPresencef) <- "contr.sum"
+contrasts(df_Agent$Agent_Action_levelf) <- "contr.sum"
+```
+```{r}
+
+interceptOnly_Agent<-gls(AbsolutErrorR ~ 1, data = df_Agent, 
+                    method = "ML")
+IDrandomInterceptOnly_Agent <-lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = df_Agent)
+TrialIDrandomIntercept_Agent <-lmer(AbsolutErrorR ~ 1 + (1|StartPointID) + (1|SubjectID), data = df_Agent)
+```
+
+```{r}
+TwofactorInteraction_Agent <-update(TrialIDrandomIntercept_Agent, .~. +  ContextEffectf*Agent_Action_levelf)
+summary(TwofactorInteraction_Agent)
+Anova(TwofactorInteraction_Agent)
+Pairwise<- emmeans(TwofactorInteraction_Agent, pairwise ~ ContextEffectf*Agent_Action_levelf)
+Pairwise
+plot(Pairwise[[2]], CIs = TRUE)
+```
+```{r}
+library(glmmTMB)
+library(sjPlot)
+plot_model(TwofactorInteraction_Agent, type="re")
+plot_model(TwofactorInteraction_Agent, type="est", legend_title = "Custom Legend Title")
+plot_model(TwofactorInteraction_Agent, type="pred")
+plot_model(TwofactorInteraction_Agent, type="int", mdrt.values = "quart")
+```
+```{r}
+plot_model(TwofactorInteraction_Agent, show.values = TRUE, value.offset = .3, axis.labels = c("Location * Agent category","Agent category (Active vs Passive)","Location (Public vs. Residential) ", "Agent presence on the task stimuli"), title = "LMM predictor estimates for response time", colors="bw",  vline.color = "red")
+```
+```{r}
+interceptOnly<-gls(AbsolutErrorR ~ 1, data = df_Agent, method="ML")
+IDrandomIntercept <-lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = df_Agent)
+PointingLocations <-lmer(AbsolutErrorR ~ 1 + (1|StartPointID) + (1|SubjectID), data = df_Agent)
+anova( IDrandomIntercept, PointingLocations)
+```
+```{r}
+TwofactorInteraction_Agent <-update(PointingLocations, .~. +  Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze)
+summary(TwofactorInteraction_Agent)
+Anova(TwofactorInteraction_Agent)
+```
+```{r}
+plot_model(TwofactorInteraction_Agent, show.values = TRUE, value.offset = .3, colors="bw",  vline.color = "red")
+tab_model(TwofactorInteraction_Agent)
+```
+```{r}
+linear_model <- lm(AbsolutError ~ Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze + ContextEffectf*Agent_Action_levelf, data=df_Agent)
+Complete_model <-update(PointingLocations, .~. + Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze + ContextEffectf*Agent_Action_levelf)
+Complete_model_NOMATCH <-update(PointingLocations, .~. + Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze + ContextEffectf*Agent_Action_levelf)
+summary(Complete_model)
+Anova(Complete_model)
+```
+```{r}
+plot_model(Complete_model, show.values = TRUE, value.offset = .3, colors="bw",  vline.color = "red", axis.labels = c("Location x Agent category","Agent category (Active vs. Passive)","Location  (Public vs. Residential)", "Dwealling time on agent", "Dwealling time on task Building","Intercept"))
+tab_model(Complete_model, pred.labels=c("Intercept", "Dwealling time on task Building",  "Dwealling time on agent","Location  (Public vs. Residential)","Agent category (Active vs. Passive)", "Location x Agent category" ))
+
+```
+
+```{r}
+means_just_location_Agent <- lsmeans(TwofactorInteraction_Agent, ~  ContextEffectf) 
+```
+```{r}
+# To convert from lsmeans output 
+
+d <- data.frame(means_just_location_Agent)
+
+
+ggplot(data = d,aes(x = ContextEffectf, y = lsmean)) +
+geom_point(aes(shape = ContextEffectf), position = position_dodge(0.3)) +
+geom_errorbar(aes(linetype = ContextEffectf, ymin = lsmean - SE, ymax = lsmean + SE),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0)) +
+  ylab("Estimated marginal means for absolute angular error") +
+  xlab("Location") +
+  ggtitle("Estimated marginal means:",
+          subtitle = "The location and agent categories interaction") +
+  labs(caption = paste0("Error bars indicate one one standard errors associated with each estimated marginal mean \n"),
+       linetype = legend_title,
+       shape = legend_title)
+```
+#Fixations
+
+```{r}
+HumanA_Fixations<- read.csv("/Volumes/TwoTeras/1_Experiment_2/Eye_Tracking/Pre_processed/Data_Sets/BehavioralData_Fixations_Wide.csv", sep =",")
+unique(HumanA_Fixations$SubjectID)
+```
+```{r}
+HumanA_Fixations$ContextEffectf <-dplyr::recode(HumanA_Fixations$Context, 
+                                      False = -0.5, True= 0.5,
+                                      .default = NaN)
+HumanA_Fixations$AgentPresence <-dplyr::recode(HumanA_Fixations$AvatarPresenceCategory,
+                                             Omitted = -0.5, Present= 0.5,
+                                             .default = NaN)
+HumanA_Fixations$Agent_Action_level <-dplyr::recode(HumanA_Fixations$Agent_Action_level,
+                                             Passive = -0.5, Active= 0.5,
+                                             .default = NaN)
+HumanA_Fixations$ContextEffectf <-factor(HumanA_Fixations$ContextEffectf,levels= c(-0.5, 0.5), 
+                               labels=c('Residential', 'Public')) 
+HumanA_Fixations$AgentPresencef <-factor(HumanA_Fixations$AgentPresence,
+                                levels= c(-0.5, 0.5), 
+                                labels=c('Omitted', 'Displayed'))
+HumanA_Fixations$Agent_Action_levelf <-factor(HumanA_Fixations$Agent_Action_level,
+                                levels= c(-0.5, 0.5), 
+                                labels=c('Passive', 'Active'))
+```
+
+```{r}
+library(dplyr)
+TwoFactorTable <- HumanA_Fixations %>% 
+  group_by(ContextEffectf, Agent_Action_levelf)%>%
+  summarise(Dwelling_Time_Building_GazeMean = mean(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+            n=n(),
+            Dwelling_Time_Building_GazeDev = sd(Dwelling_Time_Building_Gaze, na.rm = TRUE),
+            Dwelling_Time_Agent_GazeMean = mean(Dwelling_Time_Agent_Gaze, na.rm = TRUE),
+            Dwelling_Time_Agent_GazeDev = sd(Dwelling_Time_Agent_Gaze, na.rm = TRUE))
+library(tidyr)
+TwoFactorTableUnite <- TwoFactorTable %>%
+  unite("TwoFactor", ContextEffectf:Agent_Action_levelf, sep= " ", remove = F)
+  
+TwoFactorTableUnite <-  TwoFactorTableUnite %>%
+  mutate( Dwelling_Time_Agent_Gaze_StandardError = Dwelling_Time_Agent_GazeDev/sqrt(n)) %>%  
+  mutate( Dwelling_Time_Agent_GazeIC = Dwelling_Time_Agent_GazeDev * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate( Dwelling_Time_Building_Gaze_StandardError = Dwelling_Time_Building_GazeDev/sqrt(n)) 
+```
+
+```{r}
+Acc <- ggplot(data = subset(TwoFactorTableUnite, !is.na(Agent_Action_levelf)),
+              aes(x = ContextEffectf,
+                  y = Dwelling_Time_Building_GazeMean,
+                  group = Agent_Action_levelf))
+
+Acc + geom_point(aes(shape = Agent_Action_levelf, linetype = Agent_Action_levelf), position = position_dodge(0.3)) +
+  geom_errorbar(aes(linetype = Agent_Action_levelf, ymin = Dwelling_Time_Building_GazeMean - Dwelling_Time_Building_Gaze_StandardError, 
+                    ymax = Dwelling_Time_Building_GazeMean + Dwelling_Time_Building_Gaze_StandardError),
+                position = position_dodge(0.3),
+                width = 0.2,
+                size = 0.7) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        legend.position="top",
+        legend.background = element_rect(fill="gray88",
+                                  size=0.5, linetype="solid", 
+                                  colour ="gray88"),
+        plot.caption = element_text(hjust = 0))  +
+  ylab("Dwelling Time of target buildings in Seconds") +
+  xlab("Location") +
+  ggtitle("Dwelling Time of target buildings",
+          subtitle = "The effects of location and agent category on Dwelling Time Building") +
+  labs(caption = paste0("Error bars indicate one Standard Error \n"))
+```
+
+```{r warning = FALSE }
+df_Agent = HumanA_Fixations[complete.cases(HumanA_Fixations),]
+df_Agent$AbsolutErrorR <- round(df_Agent$AbsolutError, digits = 3)
+qqp(df_Agent$AbsolutErrorR, "norm")
+qqp(df_Agent$AbsolutErrorR, "lnorm")
+
+# Set up contrast to sum zero A.K.A compare each level equally
+contrasts(df_Agent$ContextEffectf) <- "contr.sum"
+contrasts(df_Agent$AgentPresencef) <- "contr.sum"
+contrasts(df_Agent$Agent_Action_levelf) <- "contr.sum"
+```
+
+
+```{r}
+interceptOnly_Agent<-gls(AbsolutErrorR ~ 1, data = df_Agent, 
+                    method = "ML")
+IDrandomInterceptOnly_Agent <-lmer(AbsolutErrorR ~ 1 + (1|SubjectID), data = df_Agent)
+TrialIDrandomIntercept_Agent <-lmer(AbsolutErrorR ~ 1 + (1|StartPointID) + (1|SubjectID), data = df_Agent)
+```
+
+```{r}
+TwofactorInteraction_Agent <-update(TrialIDrandomIntercept_Agent, .~. +  Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze)
+summary(TwofactorInteraction_Agent)
+Anova(TwofactorInteraction_Agent)
+```
+```{r}
+plot_model(TwofactorInteraction_Agent, show.values = TRUE, value.offset = .3, colors="bw",  vline.color = "red")
+tab_model(TwofactorInteraction_Agent)
+```
+```{r}
+Complete_model <-update(TrialIDrandomIntercept_Agent, .~. +  Dwelling_Time_Building_Gaze+Dwelling_Time_Agent_Gaze + ContextEffectf*Agent_Action_levelf  + AgentPresencef )
+summary(Complete_model)
+Anova(Complete_model)
+```
+```{r}
+plot_model(Complete_model, show.values = TRUE, value.offset = .3, colors="bw",  vline.color = "red")
+tab_model(Complete_model, pred.labels=c("Intercept", "Dwealling time on task Building",  "Dwealling time on agent","Location context (Public vs. Residential)","Agent category (Active vs. Passive)","Agent Presence in Task Stimuli", "Location x Agent category" ))
+```
+```{r}
+plot_model(Complete_model, type="re")
+plot_model(Complete_model, type="est")
+plot_model(Complete_model, type="pred")
+plot_model(Complete_model, type="int", mdrt.values = "quart")
+```
+
